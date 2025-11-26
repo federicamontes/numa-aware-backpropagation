@@ -29,6 +29,7 @@ Use the provided Makefile to compile the source file (neural_network.c)
 	make
 	# Creates the executable: nn_original
 
+	Unzip mnist dataset → it contains training and testing set
 You can then run the executable:
 #	./nn_original
 
