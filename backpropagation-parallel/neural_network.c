@@ -25,7 +25,7 @@ const double beta_2 = 0.999;
 //best: k = 1
 #define MAX_ALLOC_LIMIT 512*512
 
-int num_numa_nodes = 1; //this is 1 for now
+int num_numa_nodes = 2; //this is 1 for now
 
 #define PAGE_SIZE 4096
 // Allineamento nativo per i tipi di dati (double e puntatori su 64-bit)
@@ -692,6 +692,9 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
                     char* activation_fun, char* loss, char* opt, double learning_rate,
                     int num_samples_to_train, int itr){
 
+    fprintf(stderr, "\n[DEBUG TRAIN] Starting model_train (NN Addr: %p, Samples: %d). n_layers: %d.\n", 
+            (void*)nn, num_samples_to_train, nn->n_layers);
+   
     // Create an array for generating random permutation of training sample indices
     int arr[N_SAMPLES]; //all samples
     for(int i=0;i<N_SAMPLES;i++){
@@ -741,12 +744,14 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
         }
     }
 
+    
     //avg loss
     loss_val /=(double)num_samples_to_train;
     double accuracy = (double)correct/(double)num_samples_to_train;
     static double metrics[2];
     metrics[0] = loss_val;
     metrics[1] = accuracy;
+    fprintf(stderr, "[DEBUG TRAIN] Epoch finished. Final Loss: %f, Accuracy: %f.\n", loss_val, accuracy);
     return metrics;
 }
 
