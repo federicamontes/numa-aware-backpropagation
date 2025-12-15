@@ -105,7 +105,7 @@ void bind_memory_to_numa_node(void* addr, size_t size, int node) {
     
     unsigned long nodemask = (1UL << node);
     if (mbind(addr, size, MPOL_BIND, &nodemask, 
-              64, 0) < 0) 
+              sizeof(unsigned long) * 8, MPOL_MF_STRICT) < 0) 
     {
         perror("mbind failed");
         // Handle error: possibly fall back to first-touch policy
@@ -219,20 +219,20 @@ struct NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
 
 
     // nn_array_size = num_numa_nodes * size of NeuralNet *
-    size_t nn_array_size = num_numa_nodes * sizeof(struct NeuralNet *);
-    nn_array_size = align_block(nn_array_size);
+    size_t nn_array_size = (size_t)num_numa_nodes * sizeof(struct NeuralNet *);
+    size_t nn_array_size_aligned = (nn_array_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
     // total_numa_map_size = total_size * num_numa_nodes + nn_array_size
-    size_t total_numa_map_size = total_size * num_numa_nodes + nn_array_size;
+    size_t total_numa_map_size = (total_size * (size_t)num_numa_nodes) + nn_array_size_aligned;
 
 
     // Map the entire memory block in a single call
-    void* mmap_block = mmap_alloc(total_numa_map_size); //todo total_numa_map_size
+    void* mmap_block = mmap_alloc(total_numa_map_size);
     
     // TODO NeuralNet **nn_array = (struct NeuralNet **)mmap_block
     struct NeuralNet **nn_array = (struct NeuralNet **) mmap_block;
     // char * current_start = (char *) mmap_block + nn_array_size
-    char * current_start = (char *)mmap_block + nn_array_size;
+    char * current_start = (char *)mmap_block + nn_array_size_aligned;
     
     // Initialize the current pointer to traverse the allocated block.
     //char* current_ptr = (char*)mmap_block;
