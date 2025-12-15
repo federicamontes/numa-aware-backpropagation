@@ -3,7 +3,7 @@ TARGET = nn_parallel
 
 CC = gcc
 
-CFLAGS = -Wall -Wextra -O3 -g -std=c99 -I.
+CFLAGS = -Wall -Wextra -O3 -g -std=gnu11 -I.
 
 
 LDFLAGS = -lm -pthread -lnuma
