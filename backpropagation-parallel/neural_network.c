@@ -273,7 +273,7 @@ struct NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
 
         nn->n_layers = n_layers;
         nn->total_mmap_size = total_size;
-        nn->initial_mmap_addr = mmap_block;
+        nn->initial_mmap_addr = net_addr;
         
 
         // Integer array storing neuron counts per layer
@@ -398,13 +398,15 @@ struct NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
         nn->targets = (double*)current_ptr; current_ptr += targets_size;
         current_ptr = (char*)align_block((size_t)current_ptr);
 
-        
+        size_t actual_used_size = (size_t)(current_ptr - (char*)net_addr);
+
         printf("DEBUG: Calculated total size (2MB aligned): %zu bytes\n", total_size);
-        printf("DEBUG: Actual size used (up to current_ptr): %zu bytes\n", (size_t)(current_ptr - (char*)mmap_block));
+        printf("DEBUG: Actual size used (relative to net_addr): %zu bytes\n", actual_used_size);
         
-        // The current pointer must be within the total allocated size (total_size)
-        if ((size_t)(current_ptr - (char*)mmap_block) > total_size) {
-            fprintf(stderr, "FATAL ERROR: Assignment exceeded the allocated size!\n");
+        // The check must be against total_size, which is the allocated space for this single network
+        if (actual_used_size > total_size) {
+            fprintf(stderr, "FATAL ERROR: Network %d Assignment exceeded its allocated size (Used: %zu, Max: %zu)!\n", 
+                    numa_node, actual_used_size, total_size);
             exit(EXIT_FAILURE);
         }
     }
