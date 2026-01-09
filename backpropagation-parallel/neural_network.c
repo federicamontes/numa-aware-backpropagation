@@ -25,7 +25,7 @@ const double beta_2 = 0.999;
 //best: k = 1
 #define MAX_ALLOC_LIMIT 512*512
 
-int num_numa_nodes = 2; //this is 1 for now
+int num_numa_nodes = 1; //this is 1 for now
 
 #define PAGE_SIZE 4096
 // Allineamento nativo per i tipi di dati (double e puntatori su 64-bit)
@@ -104,6 +104,7 @@ struct NeuralNet{
 void bind_memory_to_numa_node(void* addr, size_t size, int node) {
     
     unsigned long nodemask = (1UL << node);
+    printf("numa node %d mask %lu\n", node, nodemask);
     if (mbind(addr, size, MPOL_BIND, &nodemask, 
               sizeof(unsigned long) * 8, MPOL_MF_STRICT) < 0) 
     {
@@ -138,70 +139,6 @@ void* mmap_alloc(size_t size) {
 }
 
 
-
-/** Function to create a neural network and allocate memory
-* @param n_layers: int, number of layers
-* @param n_neurons_per_layer: int[], array of neurons per layers
-* @return struct NeuralNet*, a neural network ptr 
-*/
-struct NeuralNet* newNet(int n_layers, int n_neurons_per_layer[]){
-
-    void* initial_addr = base_address;
-
-    struct NeuralNet* nn = mmap_alloc(sizeof(struct NeuralNet)); //size to be changed wrt numa nodes
-    nn->n_layers = n_layers;
-
-    nn->initial_mmap_addr = initial_addr;
-
-    // neurons per layer array
-    nn->n_neurons_per_layer = mmap_alloc(n_layers * sizeof(int));
-    for (int i = 0; i < n_layers; i++)
-        nn->n_neurons_per_layer[i] = n_neurons_per_layer[i];
-
-    // allocate matrix pointers (these are write-intensive)
-    nn->w            = mmap_alloc((n_layers - 1) * sizeof(double**));
-    nn->momentum_w   = mmap_alloc((n_layers - 1) * sizeof(double**));
-    nn->momentum2_w  = mmap_alloc((n_layers - 1) * sizeof(double**));
-    nn->b            = mmap_alloc((n_layers - 1) * sizeof(double*));
-    nn->momentum_b   = mmap_alloc((n_layers - 1) * sizeof(double*));
-    nn->momentum2_b  = mmap_alloc((n_layers - 1) * sizeof(double*));
-    for (int i = 0; i < n_layers - 1; i++) {
-
-        int n_in  = nn->n_neurons_per_layer[i] + 1; 
-        int n_out = nn->n_neurons_per_layer[i+1] + 1;
-
-        nn->w[i]           = mmap_alloc(n_in * sizeof(double*));
-        nn->momentum_w[i]  = mmap_alloc(n_in * sizeof(double*));
-        nn->momentum2_w[i] = mmap_alloc(n_in * sizeof(double*));
-        nn->b[i]           = mmap_alloc(n_in * sizeof(double));
-        nn->momentum_b[i]  = mmap_alloc(n_in * sizeof(double));
-        nn->momentum2_b[i] = mmap_alloc(n_in * sizeof(double));
-
-        for (int j = 0; j < n_in; j++) {
-            nn->w[i][j]           = mmap_alloc(n_out * sizeof(double));
-            nn->momentum_w[i][j]  = mmap_alloc(n_out * sizeof(double));
-            nn->momentum2_w[i][j] = mmap_alloc(n_out * sizeof(double));
-        }
-    }
-
-    // backprop arrays (these are read-intensive)
-    nn->delta = mmap_alloc(n_layers * sizeof(double*));
-    nn->in    = mmap_alloc(n_layers * sizeof(double*));
-    nn->out   = mmap_alloc(n_layers * sizeof(double*));
-    for (int i = 0; i < n_layers; i++) {
-        int n = nn->n_neurons_per_layer[i] + 1;
-        nn->delta[i] = mmap_alloc(n * sizeof(double));
-        nn->in[i]    = mmap_alloc(n * sizeof(double));
-        nn->out[i]   = mmap_alloc(n * sizeof(double));
-    }
-
-    // target vector
-    nn->targets = mmap_alloc((nn->n_neurons_per_layer[n_layers-1] + 1) * sizeof(double));
-
-    nn->total_mmap_size = (unsigned long)base_address - (unsigned long)initial_addr;
-
-    return nn;
-}
 
 
 /**
@@ -255,7 +192,9 @@ struct NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
 
         void *net_addr = (void*)(current_start + numa_node*total_size);
         size_t aligned_net_size = (total_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-        bind_memory_to_numa_node(net_addr, aligned_net_size, numa_node);
+        
+        bind_memory_to_numa_node(net_addr, aligned_net_size, numa_node); //this should not be mbind! use it for a baseline only
+        // this should be replaced with LKM numa support
 
         char * current_ptr = (char *) net_addr;
 
