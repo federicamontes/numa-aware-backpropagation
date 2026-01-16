@@ -1,22 +1,16 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <string.h>
-#define N_SAMPLES 60000
-#define N_DIMS 784
-#define N_CLASSES 10
-#define N_TEST_SAMPLES 10000
+#include "read_data.h"
 
 
 // Function to read training and test data and store them appropriately
 void read_csv_file(double** data, double* y_temp, double** y, char* dataset){
-    FILE *file = NULL;
+    char full_path[1024];
     if(strcmp(dataset, "train") == 0){
-        file = fopen("mnist_train.csv", "r");
+        snprintf(full_path, sizeof(full_path), "%s%s", INPUT_PATH, "mnist_train.csv");
+    } else {
+        snprintf(full_path, sizeof(full_path), "%s%s", INPUT_PATH, "mnist_test.csv");
     }
-    else if(strcmp(dataset, "test") == 0){
-        file = fopen("mnist_test.csv", "r");
-    }
+    
+    FILE *file = fopen(full_path, "r");
     if(file == NULL){
         printf("Error reading the csv file!\n");
         exit(1);

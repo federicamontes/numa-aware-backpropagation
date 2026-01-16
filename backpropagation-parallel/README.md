@@ -39,3 +39,23 @@ It does create an output file called metrics_63_32.txt which format is
 -	train_loss,train_acc,test_loss,test_acc
 
 
+# New structure of the project
+.
+├── CMakeLists.txt
+├── include/
+│   ├── activation.h      (Math: sigmoid, relu)
+│   ├── memory_manager.h  (System: mmap, mbind, alignment)
+│   ├── neural_network.h  (Core: forward, backprop)
+│   ├── read_data.h       (IO: CSV parsing)
+│   └── utils.h           (Helpers: randn, shuffle)
+├── src/
+│   ├── activation.c
+│   ├── memory_manager.c
+│   ├── neural_network.c
+│   ├── read_data.c
+│   └── utils.c
+└── test/
+    └── main_test.c       (High-level setup and calling trainer)
+├── input/
+│   └── (.csv files)
+└── build/ (Created by CMake)
