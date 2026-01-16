@@ -28,6 +28,9 @@
 *.so.*
 *.dylib
 
+# csv files
+.csv
+
 # Executables
 *.exe
 *.out
