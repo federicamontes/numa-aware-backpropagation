@@ -2,7 +2,7 @@
 #include "read_data.h"
 #include "utils.h"
 #include "memory_manager.h"
-
+#include <time.h>
 
 int main(int argc, char *argv[]) {
     // 1. Seed the random number generator
