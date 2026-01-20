@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <numaif.h>
 #include "utils.h"
+#include <stdint.h>
 
 // Define global variables
 unsigned long base_address = 0x1000000000; // Aligned to 2MB
@@ -17,22 +18,25 @@ size_t align_page(size_t current_size) {
 }
 
 
-
+/**
+ * It computes the amount of memory required for one instance of Neural Network struct
+ * with all its field. It sums up the sizes of the metadata, the pointers, 
+ * and the raw double data based on the network architecture (n_layers and neurons per layer)
+ * */
 size_t sum_all_mmap_allocations(int n_layers, const int n_neurons_per_layer[]) {
     size_t total_required_size = 0;
     
-    // Space for the base struct itself
+    // Space for the struct itself
     total_required_size += sizeof(NeuralNet);
     
-
-    // Stores the architecture configuration
+    // architecture metadata: the number of layers 
     total_required_size += (size_t)n_layers * sizeof(int);
     
     // Top-Level Pointers (Weight and Bias Matrices)
-    // nn->w, nn->momentum_w, nn->momentum2_w: 3 pointer arrays
+    // Weights: nn->w, nn->momentum_w, nn->momentum2_w: 3 pointer arrays
     total_required_size += (size_t)(n_layers - 1) * 3 * sizeof(double***); 
     
-    // nn->b, nn->momentum_b, nn->momentum2_b: 3 pointer arrays
+    // Bias: nn->b, nn->momentum_b, nn->momentum2_b: 3 pointer arrays
     total_required_size += (size_t)(n_layers - 1) * 3 * sizeof(double**);  
 
     // Loop over Weight Layers (Intermediate Pointers and Data)
@@ -40,7 +44,7 @@ size_t sum_all_mmap_allocations(int n_layers, const int n_neurons_per_layer[]) {
         int n_in  = n_neurons_per_layer[i] + 1;    // Current layer (plus bias)
         int n_out = n_neurons_per_layer[i+1] + 1;  // Next layer (plus bias)
 
-        // Intermediate Pointers for W (w[i], m_w[i], m2_w[i])
+        // Intermediate Pointers (w[i], m_w[i], m2_w[i])
         // 3 arrays of pointers to rows
         total_required_size += (size_t)n_in * 3 * sizeof(double*);
 
@@ -73,6 +77,7 @@ size_t sum_all_mmap_allocations(int n_layers, const int n_neurons_per_layer[]) {
     // Used to store the desired one-hot labels for the current sample
     total_required_size += (size_t)(n_neurons_per_layer[n_layers-1] + 1) * sizeof(double);
     
+
     return total_required_size;
 }
 
@@ -140,7 +145,99 @@ size_t calculate_total_nn_size_for_single_mmap(int n_layers, const int n_neurons
 }
 
 
+/**
+ * This functions computes the amount of memory needed for transient data
+ * such as delta, in, out, targets → the pointers kept by each process in its own private memory zone
+ * It also computes the memory needed for local gradients (weights and bias)
+ * */
+size_t calculate_private_workspace_size(int n_layers, const int n_neurons_per_layer[]) {
+    size_t size = 0;
 
+    // --- 1. ACTIVATION BUFFERS (in, out, delta) ---
+    // Top-level pointers (double**)
+    size = align_block(size + (size_t)n_layers * 3 * sizeof(double*));
+    // Vector data for each layer
+    for (int i = 0; i < n_layers; i++) {
+        int n = n_neurons_per_layer[i] + 1;
+        size = align_block(size + (size_t)n * 3 * sizeof(double));
+    }
+
+    // --- 2. TARGET BUFFER ---
+    size = align_block(size + (size_t)(n_neurons_per_layer[n_layers-1] + 1) * sizeof(double));
+
+    // --- 3. GRADIENT STORAGE (local_grad_w, local_grad_b) ---
+    // Top-level pointers (w is double***, b is double**)
+    size = align_block(size + (size_t)(n_layers - 1) * sizeof(double**)); // local_grad_w
+    size = align_block(size + (size_t)(n_layers - 1) * sizeof(double*));  // local_grad_b
+
+    for (int i = 0; i < n_layers - 1; i++) {
+        int n_in  = n_neurons_per_layer[i] + 1;
+        int n_out = n_neurons_per_layer[i+1] + 1;
+
+        // Intermediate row pointers for local_grad_w[i]
+        size = align_block(size + (size_t)n_in * sizeof(double*)); 
+        
+        // Bias gradient data for local_grad_b[i]
+        size = align_block(size + (size_t)n_in * sizeof(double));
+
+        // Weight gradient data rows for local_grad_w[i][j]
+        // Following your allocSharedNN logic: align after every row
+        for (int j = 0; j < n_in; j++) {
+            size = align_block(size + (size_t)n_out * sizeof(double));
+        }
+    }
+
+    return size;
+}
+
+/**
+ * This functions only computes the amount of memory needed for the shared part of the network
+ * excluding all parameters that change at each iteration of training (in, out, delta and targets)
+ * */
+size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]) {
+    size_t size = 0;
+    
+    // NeuralNet struct + architecture array
+    size = align_block(size + sizeof(NeuralNet));
+    size = align_block(size + (size_t)n_layers * sizeof(int));
+    
+    // Top-level weight/bias pointers
+    size = align_block(size + (size_t)(n_layers - 1) * 3 * sizeof(double**)); // w, m_w, m2_w
+    size = align_block(size + (size_t)(n_layers - 1) * 3 * sizeof(double*));  // b, m_b, m2_b
+
+    for (int i = 0; i < n_layers - 1; i++) {
+        int n_in  = n_neurons_per_layer[i] + 1;
+        int n_out = n_neurons_per_layer[i+1] + 1;
+
+        // 4. Intermediate row pointers (double**)
+        size = align_block(size + (size_t)n_in * 3 * sizeof(double*)); 
+        
+        // 5. Bias data
+        // Matches: nn->b[i] = (double*)curr; 
+        //curr += n_in * sizeof(double); (repeated 3x)
+        // Followed by: curr = (char*)align_block((uintptr_t)curr);
+        size = align_block(size + (size_t)n_in * 3 * sizeof(double));  
+
+        // 6. Weight data rows
+        // Matches: for(j<n_in) { ... curr += n_out * sizeof(double) (x3); curr = align_block; }
+        for (int j = 0; j < n_in; j++) {
+             size = align_block(size + (size_t)n_out * 3 * sizeof(double));
+        }
+    }
+    return size;
+}
+
+size_t calculate_total_system_memory(int n_layers, const int n_neurons_per_layer[], int n_nodes, int n_processes) {
+    size_t shared_part = calculate_shared_model_size(n_layers, n_neurons_per_layer);
+    size_t private_part = calculate_private_workspace_size(n_layers, n_neurons_per_layer);
+    
+    size_t private_step = (private_part > WORKER_SLOT_SIZE) ? align_page(private_part) : WORKER_SLOT_SIZE;
+
+    // Total = (Shared Model * Nodes) + (Private Workspace * Processes)
+    size_t total = (shared_part * n_nodes) + (private_step * n_processes);
+
+    return align_page(total);
+}
 
 
 void bind_memory_to_numa_node(void* addr, size_t size, int node) {
@@ -237,7 +334,8 @@ NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
 
     // nn_array_size = num_numa_nodes * size of NeuralNet *
     size_t nn_array_size = (size_t)num_numa_nodes * sizeof(struct NeuralNet *);
-    size_t nn_array_size_aligned = (nn_array_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    //size_t nn_array_size_aligned = (nn_array_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    size_t nn_array_size_aligned = align_page(nn_array_size);
 
     // total_numa_map_size = total_size * num_numa_nodes + nn_array_size
     size_t total_numa_map_size = (total_size * (size_t)num_numa_nodes) + nn_array_size_aligned;
@@ -246,7 +344,6 @@ NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
     // Map the entire memory block in a single call
     void* mmap_block = mmap_alloc(total_numa_map_size);
     
-    // TODO NeuralNet **nn_array = (struct NeuralNet **)mmap_block
     struct NeuralNet **nn_array = (struct NeuralNet **) mmap_block;
     // char * current_start = (char *) mmap_block + nn_array_size
     char * current_start = (char *)mmap_block + nn_array_size_aligned;
@@ -433,3 +530,221 @@ NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
     return nn_array;
 }
 
+
+/**
+ * Each child calls this after fork() to claim its slot.
+ * They map in, out and delta pointers at specific fixed offset to
+ * match the 2MB memory layout
+ */
+// Change return type from void to NeuralNet (the struct itself)
+NNWorker assign_worker_zone(NeuralNet* shared_nn, int rank, unsigned long private_base, int total_samples, int n_processes) {
+    NNWorker worker;
+    
+    // Identification & Data Chunking
+    worker.process_id = rank;
+    worker.shared_nn = shared_nn;
+    
+    // Calculate the workload distribution
+    worker.chunk = total_samples / n_processes;
+    worker.start_sample = rank * worker.chunk;
+    // Handle the remainder if total_samples isn't perfectly divisible
+    worker.end_sample = (rank == n_processes - 1) ? (total_samples - 1) : (worker.start_sample + worker.chunk - 1);
+
+    // Memory Zone Initialization
+    worker.my_zone_start = (char*)(private_base + (rank * WORKER_SLOT_SIZE));
+    char* curr = worker.my_zone_start;
+    int L = shared_nn->n_layers;
+
+    // Map Private Pointer Arrays (at the start of the slot)
+    worker.private_delta = (double**)curr; 
+    curr += L * sizeof(double*);
+    worker.private_in    = (double**)curr; 
+    curr += L * sizeof(double*);
+    worker.private_out   = (double**)curr; 
+    curr += L * sizeof(double*);
+
+    curr = (char*)align_block((uintptr_t)curr);
+
+    // Map Activation Buffers
+    for (int i = 0; i < L; i++) {
+        int n = shared_nn->n_neurons_per_layer[i] + 1;
+        size_t bytes = n * sizeof(double);
+
+        worker.private_delta[i] = (double*)curr; 
+        curr += bytes;
+        worker.private_in[i]    = (double*)curr; 
+        curr += bytes;
+        worker.private_out[i]   = (double*)curr; 
+        curr += bytes;
+        
+        curr = (char*)align_block((uintptr_t)curr);
+    }
+    worker.private_targets = (double*)curr; 
+    curr += (shared_nn->n_neurons_per_layer[L-1] + 1) * sizeof(double);
+    curr = (char*)align_block((uintptr_t)curr);
+
+    // Map Gradient Storage (to avoid race conditions on shared weights)
+    worker.local_grad_b = (double**)curr; 
+    curr += (L - 1) * sizeof(double*);
+    worker.local_grad_w = (double***)curr; 
+    curr += (L - 1) * sizeof(double**);
+
+    // Map Gradient Intermediate Row Pointers (Middle Level)
+    // We need an array of double* for every row in every weight matrix
+    for (int i = 0; i < L - 1; i++) {
+        int n_in = shared_nn->n_neurons_per_layer[i] + 1;
+        worker.local_grad_w[i] = (double**)curr;
+        curr += n_in * sizeof(double*);
+    }
+    curr = (char*)align_block((uintptr_t)curr);
+
+
+    // Map Actual Gradient Data (The double values)
+    // This traverses layers and neurons to assign private data space
+    for (int i = 0; i < L - 1; i++) {
+        int n_in  = shared_nn->n_neurons_per_layer[i] + 1;
+        int n_out = shared_nn->n_neurons_per_layer[i+1] + 1;
+
+        // Assign memory for Bias Gradients (1D)
+        worker.local_grad_b[i] = (double*)curr;
+        curr += n_in * sizeof(double);
+        curr = (char*)align_block((uintptr_t)curr);
+
+        // Assign memory for Weight Gradients (2D Rows)
+        for (int j = 0; j < n_in; j++) {
+            worker.local_grad_w[i][j] = (double*)curr;
+            curr += n_out * sizeof(double);
+            // Row-level alignment for performance
+            curr = (char*)align_block((uintptr_t)curr);
+        }
+    }
+
+    // Safety Verification
+    if ((uintptr_t)curr > (uintptr_t)worker.my_zone_start + WORKER_SLOT_SIZE) {
+        fprintf(stderr, "[FATAL] Rank %d exceeded 256KB slot! Used: %zu\n", 
+                rank, (size_t)(curr - worker.my_zone_start));
+        exit(1);
+    }
+
+    return worker;
+}
+
+
+/**
+ * Allocates a global memory slab for a Multi-Node, Multi-Process Neural Network.
+ * Layout: [NN_Ptr_Array] + [NUMA_Replicas (2MB aligned)] + [Worker_Slots (256KB aligned)]
+ */
+NeuralNet** allocSharedNN(int n_layers, int n_neurons_per_layer[], int n_processes) {
+    
+    // shared model size, weights, bias,...
+    size_t shared_raw = calculate_shared_model_size(n_layers, n_neurons_per_layer);
+    
+    // Align shared network to 2MB
+    size_t shared_aligned = (shared_raw + PDE_ALIGN_SIZE - 1) & ~(PDE_ALIGN_SIZE - 1);
+    
+    // size of the neural network ptr
+    size_t nn_ptr_array_size = (size_t)num_numa_nodes * sizeof(NeuralNet *);
+    size_t nn_ptr_array_aligned = (nn_ptr_array_size + PDE_ALIGN_SIZE - 1) & ~(PDE_ALIGN_SIZE-1); 
+
+    // Total Slab = Pointers + (shared_model * Nodes) + (private_network * Processes)
+    size_t total_slab_size = nn_ptr_array_aligned + 
+                             (shared_aligned * num_numa_nodes) + 
+                             (WORKER_SLOT_SIZE * n_processes);
+
+    // allocate global address space 
+    void* mmap_block = mmap_alloc(total_slab_size);
+    if (!mmap_block) return NULL;
+
+    NeuralNet **nn_array = (NeuralNet **)mmap_block;
+    char *shared_base = (char *)mmap_block + nn_ptr_array_aligned;
+
+    // init shared copies on each numa node (must be revised)
+    for (int node = 0; node < num_numa_nodes; node++) {
+        char* net_addr = shared_base + (node * shared_aligned);
+        
+        // this must be only used as baseline vs LKM technique
+        bind_memory_to_numa_node(net_addr, shared_aligned, node);
+
+        struct NeuralNet* nn = (struct NeuralNet*)net_addr;
+        nn_array[node] = nn;
+
+        // --- Metadata ---
+        nn->n_layers = n_layers;
+        nn->numa_node_id = node;
+        nn->initial_mmap_addr = mmap_block;
+        nn->total_mmap_size = total_slab_size;
+
+        char* curr = (char*)net_addr + sizeof(struct NeuralNet);
+        curr = (char*)align_block((uintptr_t)curr);
+
+        // --- Architecture Array ---
+        // CRITICAL: The array of neurons MUST be copied into the shared MMAP
+        nn->n_neurons_per_layer = (int*)curr;
+        for (int i = 0; i < n_layers; i++) {
+            nn->n_neurons_per_layer[i] = n_neurons_per_layer[i];
+        }
+        curr += n_layers * sizeof(int);
+        curr = (char*)align_block((uintptr_t)curr);
+
+        // --- Weight/Bias Top-Level Pointers ---
+        size_t w_top_size = (n_layers - 1) * sizeof(double**);
+        size_t b_top_size = (n_layers - 1) * sizeof(double*);
+
+        nn->w = (double***)curr;           curr += w_top_size;
+        nn->momentum_w = (double***)curr;  curr += w_top_size;
+        nn->momentum2_w = (double***)curr; curr += w_top_size;
+
+        nn->b = (double**)curr;            curr += b_top_size;
+        nn->momentum_b = (double**)curr;   curr += b_top_size;
+        nn->momentum2_b = (double**)curr;  curr += b_top_size;
+
+        curr = (char*)align_block((uintptr_t)curr);
+
+        // --- Intermediate Pointers (Rows) ---
+        for (int i = 0; i < n_layers - 1; i++) {
+            int n_in = nn->n_neurons_per_layer[i] + 1;
+            size_t row_ptr_size = n_in * sizeof(double*);
+
+            nn->w[i] = (double**)curr;           curr += row_ptr_size;
+            nn->momentum_w[i] = (double**)curr;  curr += row_ptr_size;
+            nn->momentum2_w[i] = (double**)curr; curr += row_ptr_size;
+        }
+
+        // --- Real Data (Weights and Biases) ---
+        // curr now points to the start of the double values
+        for (int i = 0; i < n_layers - 1; i++) {
+            int n_in = nn->n_neurons_per_layer[i] + 1;
+            int n_out = nn->n_neurons_per_layer[i+1] + 1;
+
+            // Bias data
+            nn->b[i] = (double*)curr;           curr += n_in * sizeof(double);
+            nn->momentum_b[i] = (double*)curr;  curr += n_in * sizeof(double);
+            nn->momentum2_b[i] = (double*)curr; curr += n_in * sizeof(double);
+            curr = (char*)align_block((uintptr_t)curr);
+
+            // Weight data
+            for (int j = 0; j < n_in; j++) {
+                nn->w[i][j] = (double*)curr;           curr += n_out * sizeof(double);
+                nn->momentum_w[i][j] = (double*)curr;  curr += n_out * sizeof(double);
+                nn->momentum2_w[i][j] = (double*)curr; curr += n_out * sizeof(double);
+                curr = (char*)align_block((uintptr_t)curr);
+            }
+        }
+
+        // backpropagation pointers are set to NULL because they live in the Private Pool
+        // assigned after fork() based on process rank.
+        nn->in = NULL;
+        nn->out = NULL;
+        nn->delta = NULL;
+        nn->targets = NULL;
+
+        // Verification: Ensure we didn't bleed into the next 2MB node slab
+        size_t used = (size_t)(curr - net_addr);
+        if (used > shared_aligned) {
+            fprintf(stderr, "FATAL: Node %d data (%zu) exceeded 2MB slab!\n", node, used);
+            exit(1);
+        }
+    }
+
+    return nn_array;
+}
