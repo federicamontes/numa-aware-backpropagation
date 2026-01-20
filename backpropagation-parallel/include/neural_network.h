@@ -51,6 +51,34 @@ typedef struct NeuralNet{
     int numa_node_id; // ID of the numa node
 } NeuralNet;
 
+/**
+ * Worker Context: One per process
+ * This tracks the private workspace for a specific process
+ */
+typedef struct {
+    int process_id;
+    int start_sample;
+    int end_sample;
+    int chunk; // number of samples to train
+
+    // Memory info
+    char* my_zone_start; // private zone start      
+    NeuralNet* shared_nn; // neural network base address
+
+    /* PRIVATE Workspace: Each process needs its own buffers 
+       to compute forward/backward passes for its specific batch */
+    double** private_in;    // Private activation inputs
+    double** private_out;   // Private activation outputs
+    double** private_delta; // Private local errors
+    double* private_targets; // Private target buffer
+
+    /* GRADIENT STORAGE: 
+       Each process computes its own gradients before 
+       contributing to the shared weights update */
+    double*** local_grad_w;
+    double** local_grad_b;
+
+} NNWorker;
 
 
 // --- Core Math Prototypes ---
