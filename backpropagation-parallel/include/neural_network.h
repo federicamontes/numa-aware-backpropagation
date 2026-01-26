@@ -24,6 +24,7 @@ extern int num_numa_nodes;
  * Neural Network structure 
  *  */
 typedef struct NeuralNet{
+   double magic_test_value; // Add this at the top
     int n_layers; // total number of layers
     int* n_neurons_per_layer; // number of neurons in each layer
     

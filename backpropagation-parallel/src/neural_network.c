@@ -13,7 +13,7 @@ const double beta = 0.9;
 const double beta_1 = 0.9;
 const double beta_2 = 0.999;
 
-int num_numa_nodes = 1;
+int num_numa_nodes = 2;
 
 
 
