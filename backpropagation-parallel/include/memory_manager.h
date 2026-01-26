@@ -20,7 +20,8 @@
 
 #define PDE_ALIGN_SIZE (2 * 1024 * 1024)      // 2MB Alignment for PDE Switching
 #define WORKER_SLOT_SIZE (1024 * 1024)         // 0x100000 (1MB) per process
-#define ALIGN_BLOCK(s) (((s) + 7) & ~7)       // 8-byte alignment for doubles
+#define ALIGN_BLOCK(ptr) (char*)(((uintptr_t)(ptr) + 7) & ~7)
+
 
 extern unsigned long base_address;
 
@@ -68,8 +69,8 @@ size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]
  * contiguous memory block. Each network is bound to its respective NUMA node.
  * * @return NeuralNet**, an array of pointers to the networks.
  */
-NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]);
-
+//NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]);
+NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]);
 
 
 /**
