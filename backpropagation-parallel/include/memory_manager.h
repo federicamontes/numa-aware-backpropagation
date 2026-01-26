@@ -67,11 +67,11 @@ size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]
 /**
  * Creates an array of Neural Networks (one per NUMA node) in a single 
  * contiguous memory block. Each network is bound to its respective NUMA node.
- * * @return NeuralNet**, an array of pointers to the networks.
+ * * @return NeuralNet*, a ptr to the base network.
  */
-//NeuralNet** newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]);
 NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]);
 
+void setup_worker(NNWorker* worker, NeuralNet* shared_nn, int process_id, int start, int end);
 
 /**
  * Each child calls this after fork() to claim its 256KB slot.
