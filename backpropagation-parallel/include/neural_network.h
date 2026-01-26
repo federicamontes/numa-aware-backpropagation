@@ -48,6 +48,7 @@ typedef struct NeuralNet{
     /* Memory Management */
     void* initial_mmap_addr; //start address of mmap allocation
     size_t total_mmap_size; // total mapped region
+    void *private_zone_start;
 
     int numa_node_id; // ID of the numa node
 } NeuralNet;
