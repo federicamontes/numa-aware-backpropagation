@@ -11,6 +11,7 @@ int main(int argc, char *argv[]) {
     // 2. Define Neural Network Architecture
     int n_layers = 4;
     int n_neurons_per_layer[] = {784, 64, 32, 10};
+    int n_processes = 1;
 
     // 3. Memory Calculation and Reporting
     size_t raw_size = sum_all_mmap_allocations(n_layers, n_neurons_per_layer);
@@ -25,18 +26,25 @@ int main(int argc, char *argv[]) {
 
     // 4. Initialize Network with Single Allocation (Hogwild/NUMA style)
     printf("Initializing NUMA-aware shared memory allocation...\n");
-    struct NeuralNet** nn_array = newNetSingleAlloc(n_layers, n_neurons_per_layer);
-
+    //NeuralNet** nn_array = allocSharedNN(n_layers, n_neurons_per_layer, n_processes);
+    NeuralNet** nn_array = newNetSingleAlloc(n_layers, n_neurons_per_layer);
+    printf("[DEBUG] nn_array addr = %p\n", (void*)nn_array);
     for (int i = 0; i < num_numa_nodes; i++) {
-        if (nn_array[i] != NULL) {
+        printf("[DEBUG] nn_array[%d] = %p\n", i, (void*)nn_array+i*PDE_ALIGN_SIZE);
+    }
+    
+    for (int i = 0; i < num_numa_nodes; i++) {
+        NeuralNet *nn = (NeuralNet*)((char*)nn_array + i * PDE_ALIGN_SIZE);
+        if (nn != NULL)  {
+            nn->numa_node_id = i;
+
+            init_nn(nn);
+
             printf("Node %d: Base %p | NN %p | Weights[0][0] %p\n",
-                   nn_array[i]->numa_node_id, 
-                   nn_array[i]->initial_mmap_addr, 
-                   (void*)nn_array[i], 
-                   (void*)nn_array[i]->w[0][0]);
-            
-            // Initialize weights only for the master/base node
-            if (i == 0) init_nn(nn_array[i]); 
+                   nn->numa_node_id,
+                   nn_array,   // base pointer
+                   (void*)nn,
+                   (void*)nn->w[0][0]);
         } else {
             fprintf(stderr, "Critical Error: Allocation failed on NUMA node %d\n", i);
             return EXIT_FAILURE;
@@ -91,7 +99,7 @@ int main(int argc, char *argv[]) {
     FILE* file = fopen("metrics_64_32.txt", "w");
     fprintf(file, "train_loss,train_acc,test_loss,test_acc\n");
     
-    struct NeuralNet* base_nn = nn_array[0];
+    struct NeuralNet* base_nn = nn_array;
 
     for(int itr = 0; itr < epochs; itr++) {
         double* train_m = model_train(base_nn, X_train, y_train, y_train_temp, activation_fun, loss, opt, learning_rate, num_samples_to_train, itr+1);
@@ -109,7 +117,8 @@ int main(int argc, char *argv[]) {
     // 8. Cleanup
     fclose(file);
     for (int i = 0; i < num_numa_nodes; i++) {
-        if (nn_array[i]) free_NN(nn_array[i]);
+        NeuralNet* nn = (NeuralNet*)((char*)nn_array + i * PDE_ALIGN_SIZE);
+        free_NN(nn);  // must handle sub-blocks, not nn_array[i]
     }
 
     // Free dataset
