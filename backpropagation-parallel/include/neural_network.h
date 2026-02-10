@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <numa.h>
 #include <numaif.h>
+#include <assert.h>
 
 // --- Optimizer Constants ---
 extern const double epsilon;
