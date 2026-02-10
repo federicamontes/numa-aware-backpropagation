@@ -274,8 +274,15 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
         int idx = -1; //predicted class init
         double max_val = (double)INT_MIN;
 
+        assert(nn != NULL);
+        assert(nn->out != NULL);
+        assert(nn->out[0] != NULL);
+        assert(arr[i] >= 0);
+        //assert(arr[i] < num_samples_to_train);
+
         // arr[i] is a random index
         for(int j=1;j<nn->n_neurons_per_layer[0]+1;j++){
+            assert(j > 0);
             // out[0] is the input layer, load the training set
             nn->out[0][j] = X_train[arr[i]][j-1];
         }
