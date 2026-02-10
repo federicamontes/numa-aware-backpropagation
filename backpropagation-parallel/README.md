@@ -40,22 +40,61 @@ It does create an output file called metrics_63_32.txt which format is
 
 
 # New structure of the project
+
+```bash
 .
-├── CMakeLists.txt
-├── include/
-│   ├── activation.h        # Math: sigmoid, relu
-│   ├── memory_manager.h    # System: mmap, allocation
-│   ├── neural_network.h    # Core: forward propagation, backpropagation, model train and test
-│   ├── read_data.h         # IO: CSV parsing
-│   └── utils.h             # Helpers: randn, shuffle
-├── src/
-│   ├── activation.c
-│   ├── memory_manager.c
-│   ├── neural_network.c
-│   ├── read_data.c
-│   └── utils.c
-├── test/
-│   └── main_test.c         # High-level setup and calling trainer
-├── input/
-│   └── *.csv               # Dataset files
-└── build/                  # Created by CMake
+├── backpropagation-original
+│   ├── activation.h
+│   ├── Makefile
+│   ├── metrics_64_32.txt
+│   ├── mnist_t.zip
+│   ├── neural_network.c
+│   ├── nn_original
+│   ├── Project Report.pdf
+│   ├── read_data.h
+│   └── README.md
+├── backpropagation-parallel
+│   ├── build.sh
+│   ├── CMakeLists.txt
+│   ├── include
+│   │   ├── activation.h
+│   │   ├── memory_manager.h
+│   │   ├── neural_network.h
+│   │   ├── read_data.h
+│   │   └── utils.h
+│   ├── input
+│   │   └── README.md
+│   ├── Makefile
+│   ├── metrics_64_32.txt
+│   ├── mnist_t.zip
+│   ├── nn_parallel
+│   ├── README.md
+│   ├── setup_input_data.sh
+│   ├── src
+│   │   ├── activation.c
+│   │   ├── CMakeLists.txt
+│   │   ├── memory_manager.c
+│   │   ├── neural_network.c
+│   │   ├── read_data.c
+│   │   └── utils.c
+│   └── test
+│       ├── CMakeLists.txt
+│       ├── nn_swapper.c
+│       ├── test_main.c
+│       └── test_parallel.c
+├── pte-entry-switcher
+│   ├── Linux-sys_call_table-discoverer
+│   │   ├── include
+│   │   ├── lib
+│   │   ├── load.sh
+│   │   ├── Makefile
+│   │   ├── unload.sh
+│   │   ├── usctm.c
+│   │   └── user
+│   └── PTE-entry-switcher
+│       ├── lib
+│       ├── Makefile
+│       ├── pte-entry-switcher.c
+│       └── user
+└── README.md
+```
