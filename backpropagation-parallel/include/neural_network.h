@@ -25,31 +25,32 @@ extern int num_numa_nodes;
  * Neural Network structure 
  *  */
 typedef struct NeuralNet{
-   double magic_test_value; // Add this at the top
+    double magic_test_value; // DEBUG sanity check flag for checking pte switcher LKM
+
     int n_layers; // total number of layers
     int* n_neurons_per_layer; // number of neurons in each layer
     
     /* weights and bias */
-    double*** w; // weights between each neurons in each pair of layers, 3D: [layer][prev_neuron][curr_neuron]
-    double** b; // bias weights from bias unit to neurons in the next layer, 2D: [layer][curr_neuron]
+    double*** w; // weights matrices between layer and layer+1, 3D: [layer][prev_neuron][curr_neuron]
+    double** b; // bias vectors between layer and layer+1, 2D: [layer][curr_neuron]
     
     /* optimzer variables (Adam/Momentum) */
-    double*** momentum_w; // first order moment for the weights (mobile avg for derivatives)
-    double*** momentum2_w; // second order moment for the weights (mobile avg for quadratic derivatives)
-    double** momentum_b; // first order moment for the bias
-    double** momentum2_b; // second order moment for the bias
+    double*** momentum_w; // first order momentum for weights (mobile avg for derivatives)
+    double*** momentum2_w; // second order momentum for the weights (mobile avg for quadratic derivatives)
+    double** momentum_b; // first order momentum for the bias
+    double** momentum2_b; // second order momentum for the bias
     
     /* backpropagation parameters */
-    double** delta; // errors computed for each neuron in each layer, 2D: [layer][neuron]
-    double** in; // input to the activation function in each layer, 2D: [layer][neuron]
-    double** out; // output of the activation function in each layer, 2D: [layer][neuron]
+    double** delta; // errors computed in backprop for each neuron in each layer, 2D: [layer][neuron]
+    double** in; // pre-activation values z, z = W·x + b, 2D: [layer][neuron]
+    double** out; // post-activation values a, a = activation_func(z), 2D: [layer][neuron]
 
-    double* targets; // Target values for the current sample (one-hot encoded vector)
+    double* targets; // Target output values for the current sample (one-hot encoded vector)
 
     /* Memory Management */
     void* initial_mmap_addr; //start address of mmap allocation
     size_t total_mmap_size; // total mapped region
-    void *private_zone_start;
+    void *private_zone_start; // start of private per-process memory area
 
     int numa_node_id; // ID of the numa node
 } NeuralNet;
