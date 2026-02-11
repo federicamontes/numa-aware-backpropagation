@@ -65,8 +65,11 @@ int main(int argc, char** argv) {
 
     // 3. MANUAL NUMA ALLOCATION (Matches your swap test)
     printf("=== STEP 1: NUMA-AWARE ALLOCATION ===\n");
+    size_t raw_size = sum_all_mmap_allocations(n_layers, n_neurons_per_layer);
+    size_t aligned_size = ALIGN_PAGE(raw_size);
+
     // n_neurons_per_layer fixed here
-    struct NeuralNet* n0 = newNetSingleAlloc(n_layers, n_neurons_per_layer);
+    struct NeuralNet* n0 = newNetSingleAlloc(n_layers, n_neurons_per_layer, aligned_size);
     if (n0 == NULL) return EXIT_FAILURE;
     
     struct NeuralNet* n1 = (struct NeuralNet*)((char*)n0 + PDE_SIZE);

@@ -15,7 +15,8 @@ int main(int argc, char *argv[]) {
 
     // 3. Memory Calculation and Reporting
     size_t raw_size = sum_all_mmap_allocations(n_layers, n_neurons_per_layer);
-    size_t aligned_size = calculate_total_nn_size_for_single_mmap(n_layers, n_neurons_per_layer);
+    //size_t aligned_size = calculate_total_nn_size_for_single_mmap(n_layers, n_neurons_per_layer);
+    size_t aligned_size = ALIGN_PAGE(raw_size);
 
     printf("--- Network Configuration ---\n");
     printf("Architecture: [%d] -> [%d] -> [%d] -> [%d]\n", 
@@ -26,8 +27,7 @@ int main(int argc, char *argv[]) {
 
     // 4. Initialize Network with Single Allocation (Hogwild/NUMA style)
     printf("Initializing NUMA-aware shared memory allocation...\n");
-    //NeuralNet** nn_array = allocSharedNN(n_layers, n_neurons_per_layer, n_processes);
-    NeuralNet** nn_array = newNetSingleAlloc(n_layers, n_neurons_per_layer);
+    NeuralNet** nn_array = newNetSingleAlloc(n_layers, n_neurons_per_layer, aligned_size);
     printf("[DEBUG] nn_array addr = %p\n", (void*)nn_array);
     for (int i = 0; i < num_numa_nodes; i++) {
         printf("[DEBUG] nn_array[%d] = %p\n", i, (void*)nn_array+i*PDE_ALIGN_SIZE);
@@ -37,12 +37,14 @@ int main(int argc, char *argv[]) {
         NeuralNet *nn = (NeuralNet*)((char*)nn_array + i * PDE_ALIGN_SIZE);
         if (nn != NULL)  {
             nn->numa_node_id = i;
+            nn->initial_mmap_addr = nn_array;
+            nn->total_mmap_size = aligned_size;
 
             init_nn(nn);
 
             printf("Node %d: Base %p | NN %p | Weights[0][0] %p\n",
                    nn->numa_node_id,
-                   nn_array,   // base pointer
+                   nn->initial_mmap_addr,   // base pointer
                    (void*)nn,
                    (void*)nn->w[0][0]);
         } else {
