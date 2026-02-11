@@ -92,17 +92,17 @@ size_t calculate_total_nn_size_for_single_mmap(int n_layers, const int n_neurons
     size_t total_size = 0;
     
     // space for the NeuralNet struct itself
-    total_size = align_block(total_size + sizeof(struct NeuralNet));
+    total_size = ALIGN_BLOCK(total_size + sizeof(struct NeuralNet));
     
     // space for n_neurons_per_layer 
-    total_size = align_block(total_size + (size_t)n_layers * sizeof(int));
+    total_size = ALIGN_BLOCK(total_size + (size_t)n_layers * sizeof(int));
     
     // space for w, b, momentum, momentum2
     // Three pointer arrays (w, m_w, m2_w) of double***
     size_t top_ptr_w_size = (size_t)(n_layers - 1) * 3 * sizeof(double**); 
     // Three pointer arrays (b, m_b, m2_b) of double**
     size_t top_ptr_b_size = (size_t)(n_layers - 1) * 3 * sizeof(double*); 
-    total_size = align_block(total_size + top_ptr_w_size + top_ptr_b_size);
+    total_size = ALIGN_BLOCK(total_size + top_ptr_w_size + top_ptr_b_size);
 
     
     // space for Intermediate Pointers and Real Data (Loop over weight layers)
@@ -112,34 +112,34 @@ size_t calculate_total_nn_size_for_single_mmap(int n_layers, const int n_neurons
 
         // intermediate Pointers (w[i], m_w[i], m2_w[i])
         // This calculates the space for the array of double* pointers for this layer
-        total_size = align_block(total_size + (size_t)n_in * 3 * sizeof(double*));
+        total_size = ALIGN_BLOCK(total_size + (size_t)n_in * 3 * sizeof(double*));
 
         // bias Data (b[i], m_b[i], m2_b[i])
         // Calculates the space for the actual double values for biases
-        total_size = align_block(total_size + (size_t)n_in * 3 * sizeof(double));
+        total_size = ALIGN_BLOCK(total_size + (size_t)n_in * 3 * sizeof(double));
         
         // weight Data (w[i][j], m_w[i][j], m2_w[i][j])
         // Calculates the space for all the weight rows (n_in rows)
         size_t weight_row_data_size = (size_t)n_out * 3 * sizeof(double);
-        total_size = align_block(total_size + (size_t)n_in * weight_row_data_size);
+        total_size = ALIGN_BLOCK(total_size + (size_t)n_in * weight_row_data_size);
     }
     
     // space Backprop: delta, in, out)
     // Three pointer arrays (delta, in, out) of double*
     size_t top_ptr_back_size = (size_t)n_layers * 3 * sizeof(double*);      
-    total_size = align_block(total_size + top_ptr_back_size);
+    total_size = ALIGN_BLOCK(total_size + top_ptr_back_size);
     
     // space for Backprop Data (delta[i], in[i], out[i])
     for (int i = 0; i < n_layers; i++) {
         int n = n_neurons_per_layer[i] + 1; 
         // Calculates the space for the actual double values for delta, in, and out
-        total_size = align_block(total_size + (size_t)n * 3 * sizeof(double));
+        total_size = ALIGN_BLOCK(total_size + (size_t)n * 3 * sizeof(double));
     }
 
     // space for the Target Vector
     size_t targets_size = (size_t)(n_neurons_per_layer[n_layers-1] + 1) * sizeof(double);
-    total_size = align_block(total_size + targets_size);
-    
+    total_size = ALIGN_BLOCK(total_size + targets_size);
+    printf("[calculate_total_nn_size_for_single_mmap] %.3f\n", (double)total_size / (1024*1024));
     // final Alignment to 2MB (PAGE_ALIGNMENT)
     return align_page(total_size);
 }
@@ -260,7 +260,6 @@ void* mmap_alloc(size_t size) {
     size_t aligned_size = (size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     
     void* addr = base_address;
-    // void* addr = (void*)base_address;
 
     void* ret = mmap(addr, aligned_size,
                      PROT_READ | PROT_WRITE,
@@ -274,7 +273,6 @@ void* mmap_alloc(size_t size) {
     }
 
     base_address = (void*)((char*)base_address + aligned_size);
-    // base_address = (uintptr_t)((char*)addr + aligned_size);
 
     return ret;
 }
@@ -369,21 +367,25 @@ void setup_worker(NNWorker* worker, NeuralNet* shared_nn, int process_id, int st
  * @param n_neurons_per_layer: int[], array of neurons per layer
  * @return struct NeuralNet*, pointer to the neural network
  */
-NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
-    size_t total_numa_map_size = (size_t)num_numa_nodes * PDE_ALIGN_SIZE;
-    
-    void* mmap_block = mmap_alloc(total_numa_map_size);
+NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[], size_t aligned_size) {
+
+    size_t total_numa_map_size = (size_t)num_numa_nodes * aligned_size; //total size considering numa nodes
+    printf("[newNetSingleAlloc] size %.3f MB\n", (double)total_numa_map_size / (1024 * 1024));
+
+    void* mmap_block = mmap_alloc(total_numa_map_size); //wraps mmap
 
     for (int numa_node = 0; numa_node < num_numa_nodes; numa_node++) {
-        char * net_addr = (char *)mmap_block + (numa_node * PDE_ALIGN_SIZE);
+
+        char * net_addr = (char *)mmap_block + (numa_node * PDE_ALIGN_SIZE); //each copy of the NN starts at fixed 2MB offsets
         
-        for(size_t i=0; i < PDE_ALIGN_SIZE; i += 4096) 
+        for(size_t i=0; i < PDE_ALIGN_SIZE; i += 4096) //touch: this must be performed by each process to allow NUMA distribution
             net_addr[i] = 0;
 
         struct NeuralNet* nn = (struct NeuralNet*)net_addr;
-        nn->magic_test_value = (numa_node == 0) ? 123.456 : 999.888;
-        char * current_ptr = net_addr;
+        nn->magic_test_value = (numa_node == 0) ? 123.456 : 999.888; //magic numnber for debugging pte switcher LKM
 
+        char * current_ptr = net_addr; 
+        // metadata and topology
         nn->n_layers = n_layers;
         nn->total_mmap_size = PDE_ALIGN_SIZE;
         nn->initial_mmap_addr = net_addr;
@@ -391,17 +393,16 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
         current_ptr += sizeof(struct NeuralNet);
         current_ptr = ALIGN_BLOCK(current_ptr);
 
-        // 1. Metadata
         nn->n_neurons_per_layer = (int*)current_ptr;
         for (int i = 0; i < n_layers; i++) 
             nn->n_neurons_per_layer[i] = n_neurons_per_layer[i];
         current_ptr += (n_layers * sizeof(int));
         current_ptr = ALIGN_BLOCK(current_ptr);
 
-        // 2. Top-Level Pointers
-        size_t lp_sz = (n_layers - 1) * sizeof(double**);
-        size_t bp_sz = (n_layers - 1) * sizeof(double*);
-        size_t back_sz = n_layers * sizeof(double*);
+        // top level pointers
+        size_t lp_sz = (n_layers - 1) * sizeof(double**); //weights
+        size_t bp_sz = (n_layers - 1) * sizeof(double*); //bias
+        size_t back_sz = n_layers * sizeof(double*); //activation
 
         nn->w = (double***)current_ptr;
         current_ptr += lp_sz;
@@ -423,9 +424,9 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
         current_ptr += back_sz;
         current_ptr = ALIGN_BLOCK(current_ptr);
 
-        // 3. Row Pointers
+        // intermediate (rows) pointers
         for (int i = 0; i < n_layers - 1; i++) {
-            size_t rows = (size_t)(nn->n_neurons_per_layer[i] + 1);
+            size_t rows = (size_t)(nn->n_neurons_per_layer[i] + 1); // + bias
             nn->w[i] = (double**)current_ptr;
             current_ptr += rows * sizeof(double*);
             nn->momentum_w[i] = (double**)current_ptr;
@@ -435,13 +436,14 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
         }
         current_ptr = ALIGN_BLOCK(current_ptr);
 
-        // 4. Double Data (Weights/Biases)
+        // real data (Weights/Biases)
         for (int i = 0; i < n_layers - 1; i++) {
             int n_in = nn->n_neurons_per_layer[i] + 1;
             int n_out = nn->n_neurons_per_layer[i+1] + 1;
             size_t b_sz = (size_t)n_in * sizeof(double);
             size_t w_row_sz = (size_t)n_out * sizeof(double);
 
+            // bias
             nn->b[i] = (double*)current_ptr;
             current_ptr += b_sz;
             nn->momentum_b[i] = (double*)current_ptr;
@@ -450,6 +452,7 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
             current_ptr += b_sz;
             current_ptr = ALIGN_BLOCK(current_ptr);
 
+            // weights 
             for (int j = 0; j < n_in; j++) {
                 nn->w[i][j] = (double*)current_ptr;
                 current_ptr += w_row_sz;
@@ -461,8 +464,8 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
             current_ptr = ALIGN_BLOCK(current_ptr);
         }
 
-        // --- CRITICAL ALIGNMENT FOR PRIVATIZATION ---
-        // Force the scratchpad to start on a new 4KB page
+        // private zone for backpropagation done by different processes
+        // force to start on a new 4KB page to allow non-overlapping
         current_ptr = (char*)(((uintptr_t)current_ptr + 4095) & ~4095);
         // Store the start of private zone for easier mmap access
         nn->private_zone_start = (void*)current_ptr;
@@ -479,9 +482,11 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[]) {
             current_ptr = (char*)(((uintptr_t)current_ptr + 7) & ~7); 
         }
 
+        // target vector
         nn->targets = (double*)current_ptr;
         current_ptr += (size_t)(nn->n_neurons_per_layer[n_layers-1] + 1) * sizeof(double);
 
+        // sanity check
         if ((size_t)(current_ptr - net_addr) > PDE_ALIGN_SIZE) {
             fprintf(stderr, "FATAL: Node %d overflow\n", numa_node);
             exit(EXIT_FAILURE);
