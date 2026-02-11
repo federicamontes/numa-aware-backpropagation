@@ -9,7 +9,7 @@ find_library(LIBNUMA numa REQUIRED)
 find_library(LIBM m REQUIRED)
 
 add_definitions(-DINPUT_PATH="${CMAKE_SOURCE_DIR}/input/")
-add_compile_options(-g)
+add_compile_options(-g -O3 -march=native)
 
 # Make headers available to all subdirectories
 include_directories(include)
