@@ -1,6 +1,0 @@
-train_loss,train_acc,test_loss,test_acc
--nan,0.212600,-nan,0.328600
--nan,0.374000,-nan,0.440800
--nan,0.454800,-nan,0.503100
--nan,0.517900,-nan,0.541400
--nan,0.552400,-nan,0.570900

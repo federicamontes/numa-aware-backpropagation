@@ -31,70 +31,11 @@ Use the provided Makefile to compile the source file (neural_network.c)
 
 	Unzip mnist dataset → it contains training and testing set
 You can then run the executable:
--	./nn_original
+#	./nn_original
 
 For now it does not take parameters as the configuration (optimizer, activation function..) is hardcode in main function
 
 It does create an output file called metrics_63_32.txt which format is
--	train_loss,train_acc,test_loss,test_acc
+#	train_loss,train_acc,test_loss,test_acc
 
 
-# New structure of the project
-
-```bash
-.
-├── backpropagation-original
-│   ├── activation.h
-│   ├── Makefile
-│   ├── metrics_64_32.txt
-│   ├── mnist_t.zip
-│   ├── neural_network.c
-│   ├── nn_original
-│   ├── Project Report.pdf
-│   ├── read_data.h
-│   └── README.md
-├── backpropagation-parallel
-│   ├── build.sh
-│   ├── CMakeLists.txt
-│   ├── include
-│   │   ├── activation.h
-│   │   ├── memory_manager.h
-│   │   ├── neural_network.h
-│   │   ├── read_data.h
-│   │   └── utils.h
-│   ├── input
-│   │   └── README.md
-│   ├── Makefile
-│   ├── metrics_64_32.txt
-│   ├── mnist_t.zip
-│   ├── nn_parallel
-│   ├── README.md
-│   ├── setup_input_data.sh
-│   ├── src
-│   │   ├── activation.c
-│   │   ├── CMakeLists.txt
-│   │   ├── memory_manager.c
-│   │   ├── neural_network.c
-│   │   ├── read_data.c
-│   │   └── utils.c
-│   └── test
-│       ├── CMakeLists.txt
-│       ├── nn_swapper.c
-│       ├── test_main.c
-│       └── test_parallel.c
-├── pte-entry-switcher
-│   ├── Linux-sys_call_table-discoverer
-│   │   ├── include
-│   │   ├── lib
-│   │   ├── load.sh
-│   │   ├── Makefile
-│   │   ├── unload.sh
-│   │   ├── usctm.c
-│   │   └── user
-│   └── PTE-entry-switcher
-│       ├── lib
-│       ├── Makefile
-│       ├── pte-entry-switcher.c
-│       └── user
-└── README.md
-```
