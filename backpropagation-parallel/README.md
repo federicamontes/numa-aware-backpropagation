@@ -5,7 +5,7 @@ In this project, the backpropagation algorithm in feedforward neural networks is
 
 Code taken from: https://github.com/sm823zw/Neural-Network-Backprop-using-C/tree/main
 
-The implementation follows a Stochastic Gradient Descent (SGD) approach, processing one shuffled sample at a time (per the original code structure) to perform the Forward Propagation and Back Propagation steps, not using Mini-Batch as PyTorch or TensorFlow.
+The implementation follows a Stochastic Gradient Descent (SGD) approach, processing one shuffled sample at a time (per the original code structure) to perform the Forward Propagation and Back Propagation steps, using Mini-Batch as PyTorch or TensorFlow.
 
 * Prerequisites
 
@@ -15,7 +15,7 @@ To build and run this project, you need:
 
     Math Library: The standard C math library (-lm flag is required).
 
-    Pthread library: -pthread required for future parallelization of this code 
+    NUMA library: -lnuma required  
 
 * Building the Project
 
@@ -23,15 +23,16 @@ Use the provided Makefile to compile the source file (neural_network.c)
 
 	Clean generated files:
 	make clean
-	# Removes the executable (nn_original) and object files (*.o)
+	# Removes the executable (nn_parallel) and object files (*.o)
 
     Compile the executable:
 	make
-	# Creates the executable: nn_original
+	# Creates the executable: nn_parallel
 
 	Unzip mnist dataset → it contains training and testing set
+
 You can then run the executable:
-#	./nn_original
+#	./nn_parallel
 
 For now it does not take parameters as the configuration (optimizer, activation function..) is hardcode in main function
 
@@ -39,3 +40,39 @@ It does create an output file called metrics_63_32.txt which format is
 #	train_loss,train_acc,test_loss,test_acc
 
 
+```bash
+.
+├── backpropagation-original
+│   ├── activation.h
+│   ├── Makefile
+│   ├── metrics_64_32.txt
+│   ├── mnist_t.zip
+│   ├── neural_network.c
+│   ├── Project Report.pdf
+│   ├── read_data.h
+│   └── README.md
+├── backpropagation-parallel
+│   ├── activation.h
+│   ├── Makefile
+│   ├── metrics_64_32.txt
+│   ├── mnist_t.zip
+│   ├── neural_network.c
+│   ├── read_data.h
+│   └── README.md
+├── pte-entry-switcher
+│   ├── Linux-sys_call_table-discoverer
+│   │   ├── include
+│   │   ├── lib
+│   │   ├── load.sh
+│   │   ├── Makefile
+│   │   ├── unload.sh
+│   │   ├── usctm.c
+│   │   └── user
+│   └── PTE-entry-switcher
+│       ├── lib
+│       ├── Makefile
+│       ├── pte-entry-switcher.c
+│       └── user
+└── README.md
+
+```
