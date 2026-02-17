@@ -1,0 +1,9 @@
+TODO
+
+1. Apply minibatching in model_train
+
+2. Check possible incorrect behavior in backpropagation (lines 590-592)
+
+3. Add macros for:
+	3.1 NUMA-aware allocation when creating new neural network
+	3.2 Forking processes when calling model_train
