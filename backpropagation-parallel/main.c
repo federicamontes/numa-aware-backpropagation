@@ -101,10 +101,11 @@ int main(int argc, char *argv[]) {
     fprintf(file, "train_loss,train_acc,test_loss,test_acc\n");
     
     struct NeuralNet* base_nn = nn; 
-
+    printf("[DEBUG PID %d] nn->out[0] address: %p\n", getpid(), (void*)base_nn->out[0]);
     // training loop over epochs
     for(int itr = 0; itr < epochs; itr++) {
         double* train_m = model_train(base_nn, X_train, y_train, y_train_temp, activation_fun, loss, opt, learning_rate, num_samples_to_train, itr+1);
+        printf("[DEBUG PID DOPO TRAIN %d] nn->out[0] address: %p\n", getpid(), (void*)base_nn->out[0]);
         
         double* test_m = model_test(base_nn, X_test, y_test, y_test_temp, activation_fun, loss);
 
