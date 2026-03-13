@@ -39,6 +39,12 @@ const double beta_2 = 0.999;
 
 
 
+#define PES 156 //this depends on what the kernel tells you when mounting the vtpmo module
+
+int pes(unsigned long x, int a, int b){
+    printf("CALL SYSCALL\n");
+    return syscall(PES,x,a,b);
+}
 
 NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t aligned_shared_size);
 
@@ -463,6 +469,11 @@ NeuralNet* newNetSingleAlloc(int n_layers, int n_neurons_per_layer[], size_t ali
 NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t aligned_shared_size) {
     size_t total_numa_map_size = (size_t)num_numa_nodes * aligned_shared_size;
     void* mmap_block = mmap_alloc(total_numa_map_size); 
+
+    volatile char *p = (char *)mmap_block;
+    for (size_t i = 0; i < total_numa_map_size; i += 4096) {
+        p[i] = (char)0; // Scrittura reale
+    }
 
     for (int numa_node = 0; numa_node < num_numa_nodes; numa_node++) {
         char * net_addr = (char *)mmap_block + (numa_node * aligned_shared_size);
@@ -1092,12 +1103,84 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
     }
 }
 
+void init_private_workspace(struct NeuralNet* nn) {
+    printf("[DEBUG] Init workspace for PID %d\n", getpid());
+
+    // 1. Calcoliamo lo spazio per i METADATI (i puntatori di secondo livello)
+    // Dobbiamo creare dei "vassoi" privati per questo processo
+    size_t metadata_size = (nn->n_layers * sizeof(double*)) * 3 +         // in, out, delta
+                           ((nn->n_layers - 1) * sizeof(double**)) * 3 +  // dw, momentum_w, momentum2_w
+                           ((nn->n_layers - 1) * sizeof(double*)) * 3;   // db, momentum_b, momentum2_b
+    
+    // Allochiamo i vassoi in una mmap PRIVATA
+    void* meta_block = mmap(NULL, metadata_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    char* m_ptr = (char*)meta_block;
+
+    // In questo modo, quando scriveremo nn->out[i], scriveremo in meta_block e NON in base_nn (shared)
+    nn->dw = (double***)m_ptr;          m_ptr += (nn->n_layers - 1) * sizeof(double**);
+    nn->momentum_w = (double***)m_ptr;  m_ptr += (nn->n_layers - 1) * sizeof(double**);
+    nn->momentum2_w = (double***)m_ptr; m_ptr += (nn->n_layers - 1) * sizeof(double**);
+    
+    nn->db = (double**)m_ptr;           m_ptr += (nn->n_layers - 1) * sizeof(double*);
+    nn->momentum_b = (double**)m_ptr;   m_ptr += (nn->n_layers - 1) * sizeof(double*);
+    nn->momentum2_b = (double**)m_ptr;  m_ptr += (nn->n_layers - 1) * sizeof(double*);
+
+    nn->in = (double**)m_ptr;           m_ptr += nn->n_layers * sizeof(double*);
+    nn->out = (double**)m_ptr;          m_ptr += nn->n_layers * sizeof(double*);
+    nn->delta = (double**)m_ptr;        m_ptr += nn->n_layers * sizeof(double*);
+
+    // 2. Ora allochiamo i DATI REALI (i double) come facevi prima
+    size_t priv_size = calculate_private_workspace_size(nn->n_layers, nn->n_neurons_per_layer);
+    void* local_block = mmap(NULL, priv_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    
+    // TOUCH MANUALE dei metadati: una scrittura ogni 4096 byte
+    for (size_t i = 0; i < metadata_size; i += 4096) {
+        ((char*)meta_block)[i] = 0;
+    }
+    
+    char* d_ptr = (char*)local_block;
+
+    for (int i = 0; i < nn->n_layers - 1; i++) {
+        int n_in = nn->n_neurons_per_layer[i] + 1;
+        int n_out = nn->n_neurons_per_layer[i+1] + 1;
+
+        // Inizializziamo dw[i], momentum_w[i], etc. (vassoi di 3° livello)
+        nn->dw[i] = (double**)d_ptr;          d_ptr += n_in * sizeof(double*);
+        nn->momentum_w[i] = (double**)d_ptr;  d_ptr += n_in * sizeof(double*);
+        nn->momentum2_w[i] = (double**)d_ptr; d_ptr += n_in * sizeof(double*);
+
+        // Ora assegnamo i dati reali (le righe)
+        for (int j = 0; j < n_in; j++) {
+            nn->dw[i][j] = (double*)d_ptr;          d_ptr += n_out * sizeof(double);
+            nn->momentum_w[i][j] = (double*)d_ptr;  d_ptr += n_out * sizeof(double);
+            nn->momentum2_w[i][j] = (double*)d_ptr; d_ptr += n_out * sizeof(double);
+        }
+        
+        nn->db[i] = (double*)d_ptr;          d_ptr += n_out * sizeof(double);
+        nn->momentum_b[i] = (double*)d_ptr;   d_ptr += n_out * sizeof(double);
+        nn->momentum2_b[i] = (double*)d_ptr;  d_ptr += n_out * sizeof(double);
+    }
+
+    // Attivazioni
+    for (int i = 0; i < nn->n_layers; i++) {
+        int n = nn->n_neurons_per_layer[i] + 1;
+        nn->in[i] = (double*)d_ptr;    d_ptr += n * sizeof(double);
+        nn->out[i] = (double*)d_ptr;   d_ptr += n * sizeof(double);
+        nn->delta[i] = (double*)d_ptr; d_ptr += n * sizeof(double);
+    }
+
+    nn->targets = (double*)d_ptr;
+    nn->private_zone_start = local_block;
+}
 
 
 /**
  * Init process private zones
  */
-void init_private_workspace(struct NeuralNet* nn) {
+void init_private_workspace_old(struct NeuralNet* nn) {
+    printf("[DEBUG] Entrato in init_private_workspace\n");
+    printf("[DEBUG] n_layers = %d\n", nn->n_layers); // Se crasha qui, lo switch ha rotto la struct
+    
     size_t priv_size = calculate_private_workspace_size(nn->n_layers, nn->n_neurons_per_layer);
     void* local_block = mmap(NULL, priv_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     memset(local_block, 0, priv_size);
@@ -1313,15 +1396,20 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             // set affinity
             pin_process_to_node(rank, my_node);
 
+            printf("Valore prima della syscall: %d\n", ((int*)base_nn)[0]);
             // pte switch on my_node memory view e.g. (base_addres, 0, my_node)
-            
+            long ret = pes((unsigned long) base_nn, 0, my_node);
+            if (ret < 0) {
+                fprintf(stderr, "CRITICAL: pes syscall failed for node %d\n", my_node);
+                exit(EXIT_FAILURE);
+            }
             
             // allocate private memory
             struct NeuralNet local_nn = *base_nn; //shadow memory zone
             init_private_workspace(&local_nn);
 
-            printf("[DEBUG] neural network LOCAL ptr = %p\n", (void*)local_nn);
-
+            printf("[DEBUG] neural network LOCAL ptr = %p\n", (void*)&local_nn);
+            printf("[DEBUG PID FIGLIO %d] nn->out[0] address: %p\n", getpid(), (struct NeuralNet*)(&local_nn)->out[0]);
             // training set partitioning
             int samples_per_worker = total_samples / n_workers;
             int start = rank * samples_per_worker;
@@ -1336,6 +1424,12 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             // E. Scrittura risultati e uscita
             shared_metrics[rank * 2] = results[0];
             shared_metrics[rank * 2 + 1] = results[1];
+
+            ret = pes((unsigned long) base_nn, my_node, 0);
+            if (ret < 0) {
+                fprintf(stderr, "CRITICAL: pes syscall failed for node %d\n", my_node);
+                exit(EXIT_FAILURE);
+            }
             exit(0);
         }
     }
