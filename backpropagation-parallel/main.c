@@ -3,8 +3,12 @@
 #include <time.h>
 #include <math.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "neural_network.h"
+
+
+#define SYS_PES 156 
 
 
 int main(int argc, char *argv[]) {
@@ -40,7 +44,7 @@ int main(int argc, char *argv[]) {
     if (argc > 8) epochs = atoi(argv[8]);
 
     #ifdef NUMA_API_ENABLED
-    int n_processes = 1;
+    int n_processes = 2;
     // computation of sizes for allocation
     size_t raw_size = sum_all_mmap_allocations(n_layers, n_neurons_per_layer);
     size_t raw_shared_size = calculate_shared_model_size(n_layers, n_neurons_per_layer);
@@ -59,14 +63,9 @@ int main(int argc, char *argv[]) {
 
     // Create and initialize the neural network
     struct NeuralNet* nn = newNet(n_layers, n_neurons_per_layer);
+    printf("[PRE-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
     init_nn(nn);
-
-    #ifdef NUMA_API_ENABLED
-    init_private_workspace(nn); 
-
-    printf("[DEBUG] Workspace padre inizializzato. nn->out[0] = %p\n", (void*)nn->out[0]);
-    #endif
-
+    printf("[POST-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
     printf("[DEBUG] neural network ptr = %p\n", (void*)nn);
 
 
@@ -101,12 +100,13 @@ int main(int argc, char *argv[]) {
     fprintf(file, "train_loss,train_acc,test_loss,test_acc\n");
     
     struct NeuralNet* base_nn = nn; 
-    printf("[DEBUG PID %d] nn->out[0] address: %p\n", getpid(), (void*)base_nn->out[0]);
     // training loop over epochs
     for(int itr = 0; itr < epochs; itr++) {
         double* train_m = model_train(base_nn, X_train, y_train, y_train_temp, activation_fun, loss, opt, learning_rate, num_samples_to_train, itr+1);
-        printf("[DEBUG PID DOPO TRAIN %d] nn->out[0] address: %p\n", getpid(), (void*)base_nn->out[0]);
-        
+
+        printf("[DEBUG TEST] nn base: %p | out table: %p | out[0]: %p\n", 
+        (void*)nn, (void*)nn->out, (void*)nn->out ? nn->out[0] : NULL);
+
         double* test_m = model_test(base_nn, X_test, y_test, y_test_temp, activation_fun, loss);
 
         fprintf(file, "%lf,%lf,%lf,%lf\n", train_m[0], train_m[1], test_m[0], test_m[1]);
