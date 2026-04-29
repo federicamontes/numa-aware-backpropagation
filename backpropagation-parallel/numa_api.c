@@ -47,11 +47,32 @@ NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]);
 })
 
 
+
 // Define global base address
 unsigned long base_address = 0x1000000000; // Aligned to 2MB
 static void* global_mmap_start = NULL;
 static size_t global_mmap_total_size = 0;
-int num_numa_nodes = 2;
+int num_numa_nodes = 1;
+
+
+#define DISPLACEMENT (1<<21)
+#define SET_MEMORY(addr, value) \
+    do { \
+        *(addr) = (value); \
+    for (int _i = 1; _i < (num_numa_nodes); ++_i){ \
+            *((typeof(addr))((char*)(addr) + _i * (DISPLACEMENT))) = *(addr); \
+    } \
+    } while(0)
+
+#define UPDATE_REPLICAS_GLOBAL(local_addr, delta) \
+    do { \
+        uintptr_t offset = (uintptr_t)(local_addr) - (uintptr_t)base_address; \
+        /* 2. Applica a tutti i nodi partendo dal base_address reale */ \
+        for (int _n = 0; _n < num_numa_nodes; ++_n) { \
+            double* target = (double*)((char*)base_address + (_n * DISPLACEMENT) + offset); \
+            *target -= (delta); \
+        } \
+    } while(0)
 
 #define PES 156 //this depends on what the kernel tells you when mounting the vtpmo module
 
@@ -547,8 +568,11 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
             // Usiamo il gradiente locale (ws->db) ma modifichiamo il bias globale (nn->b)
             double grad_b = ws->db[k][j] / (double)batch_size;
             
+            double delta_b = 0.0;
+
             if(strcmp(opt, "sgd") == 0) {
-                nn->b[k][j] -= lr * grad_b;
+                delta_b = lr * grad_b;
+                //nn->b[k][j] -= lr * grad_b;
             } 
             else if(strcmp(opt, "adam") == 0) {
                 // I momenti di Adam devono essere salvati nel Workspace (sono locali al processo/nodo)
@@ -558,18 +582,26 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                 double m_cap = ws->momentum_b[k][j] / (1.0 - pow(beta_1, itr));
                 double v_cap = ws->momentum2_b[k][j] / (1.0 - pow(beta_2, itr));
                 
-                nn->b[k][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
+                delta_b = (lr * m_cap) / (sqrt(v_cap) + epsilon);
+                //nn->b[k][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
             }
             
+            // instead of nn->b[k][j] -= delta_b
+            // apply delta to all replicas (subtraction is inside macro)
+            UPDATE_REPLICAS_GLOBAL(&(nn->b[k][j]), delta_b);
+
             // Azzero il gradiente locale nel Workspace per il prossimo batch
             ws->db[k][j] = 0.0;
 
             // 2. Update WEIGHTS sul modello condiviso
             for(int i=1; i < nn->n_neurons_per_layer[k]+1; i++){
                 double grad_w = ws->dw[k][i][j] / (double)batch_size;
+
+                double delta_w = 0.0;
                 
                 if(strcmp(opt, "sgd") == 0) {
-                    nn->w[k][i][j] -= lr * grad_w;
+                    delta_w = lr * grad_w;
+                    //nn->w[k][i][j] -= lr * grad_w;
                 } 
                 else if(strcmp(opt, "adam") == 0) {
                     ws->momentum_w[k][i][j] = beta_1 * ws->momentum_w[k][i][j] + (1.0-beta_1) * grad_w;
@@ -578,9 +610,11 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                     double m_cap = ws->momentum_w[k][i][j] / (1.0 - pow(beta_1, itr));
                     double v_cap = ws->momentum2_w[k][i][j] / (1.0 - pow(beta_2, itr));
                     
-                    nn->w[k][i][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
+                    delta_w = (lr * m_cap) / (sqrt(v_cap) + epsilon);
+                    //nn->w[k][i][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
                 }
                 
+                UPDATE_REPLICAS_GLOBAL(&(nn->w[k][i][j]), delta_w);
                 // Azzero il gradiente locale nel Workspace
                 ws->dw[k][i][j] = 0.0;
             }
@@ -789,7 +823,7 @@ double* new_model_train(struct NNWorkerWorkspace* ws, double** X_train, double**
                 ws->targets[j] = y_train[idx][j-1];
 
             // Forward: Passiamo il workspace (che internamente ha il puntatore alla rete condivisa)
-            forward_propagation_numa(ws, activation_fun, loss);
+            forward_propagation(ws, activation_fun, loss);
 
             // Accumulo metriche usando ws->out
             for(int j = 1; j <= nn_shared->n_neurons_per_layer[last]; j++) {
