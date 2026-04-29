@@ -25,7 +25,8 @@ ifeq ($(NUMA), 1)
                -Wl,--wrap=model_train \
                -Wl,--wrap=init_nn \
                -Wl,--wrap=free_NN \
-               -Wl,--wrap=model_test
+               -Wl,--wrap=model_test \
+               -Wl,--wrap=forward_propagation
     
     ALL_TARGETS = $(TARGET) $(TEST_TARGET)
     MSG = NUMA_MODE_ENABLED
@@ -47,8 +48,8 @@ all: $(ALL_TARGETS)
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $(OBJ) -o $(TARGET) $(LDFLAGS)
 
-$(TEST_TARGET): test_numa_nn.o numa_api.o neural_network.o
-	$(CC) $(CFLAGS) test_numa_nn.o numa_api.o neural_network.o -o $(TEST_TARGET) $(LDFLAGS) -lnuma
+$(TEST_TARGET): test_numa_nn.o numa_api.o neural_network.o wrappers.o
+	$(CC) $(CFLAGS) test_numa_nn.o numa_api.o neural_network.o wrappers.o -o $(TEST_TARGET) $(LDFLAGS) -lnuma
 
 # --- COMPILATION RULES ---
 
