@@ -43,7 +43,7 @@ double* __wrap_model_train(struct NeuralNet* nn, double** X, double** y, double*
     
     // TODO change these parameters in some way
     int batch = 256; 
-    int nproc = 1; // 0 = usa tutti i core disponibili
+    int nproc = 2; // 0 = usa tutti i core disponibili
 
     printf("[NUMA-AUTO] Intercepted model_train -> Executing parallel_training\n");
     return parallel_training(nn, X, y, y_t, act, loss, opt, lr, samples, ep, batch, nproc);
@@ -54,30 +54,54 @@ double* __wrap_model_train(struct NeuralNet* nn, double** X, double** y, double*
 double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y, 
                                  double* y_t, char* act, char* loss) {
     
-    printf("[NUMA-AUTO] Intercepted model_test -> Mapping NUMA struct to Standard layout\n");
-
-    // CREIAMO UNA STRUCT "FINTA" (Layout Standard) sullo stack
-    // Nota: Questa struct deve corrispondere alla versione "else" dell'header
-    struct NeuralNet standard_nn;
+    printf("\n--- [DEBUG WRAPPER START] ---\n");
+    printf("[WRAP] Intercepted model_test. NUMA Struct At: %p\n", (void*)nn_numa);
+    printf("[WRAP] Magic Value: %f (Expected 123.45)\n", nn_numa->magic_test_value);
     
-    // Copiamo i campi comuni manualmente. 
-    // Qui 'standard_nn' userà l'offset della versione non-NUMA.
+    // 1. Check if the Parent actually has a valid 'out' table
+    if (nn_numa->out == NULL || nn_numa->out[0] == NULL) {
+        printf("[ERROR] Parent 'out' pointers are NULL! model_test will segfault or fail.\n");
+    } else {
+        printf("[WRAP] Weights[0][0][0] Addr: %p | Val: %f\n", 
+                (void*)&nn_numa->w[0][0][0], nn_numa->w[0][0][0]);
+        printf("[WRAP] Output[0] Ptr Table Addr: %p | Row 0 Addr: %p\n", 
+                (void*)nn_numa->out, (void*)nn_numa->out[0]);
+    }
+
+    // 2. Setup the "Fake" standard struct
+    struct NeuralNet standard_nn;
+    printf("[WRAP] Fake Standard Struct Allocated on Stack at: %p\n", (void*)&standard_nn);
+
     standard_nn.magic_test_value = nn_numa->magic_test_value;
     standard_nn.n_layers = nn_numa->n_layers;
     standard_nn.n_neurons_per_layer = nn_numa->n_neurons_per_layer;
     standard_nn.w = nn_numa->w;
     standard_nn.b = nn_numa->b;
     standard_nn.in = nn_numa->in;
-    standard_nn.out = nn_numa->out;   // <--- Qui risolviamo il problema dell'offset!
+    standard_nn.out = nn_numa->out;  
     standard_nn.targets = nn_numa->targets;
-    
 
-    // Chiamiamo la funzione reale passandole l'indirizzo della struct standard
+    // 3. OFFSET CHECK: This is the most likely culprit
+    // We check where the 'out' pointer is relative to the start of the struct
+    size_t offset_numa = (size_t)&(nn_numa->out) - (size_t)nn_numa;
+    size_t offset_std  = (size_t)&(standard_nn.out) - (size_t)&standard_nn;
+    
+    printf("[WRAP] Offset Check - 'out' field:\n");
+    printf("       -> In NUMA struct: %zu bytes\n", offset_numa);
+    printf("       -> In Standard struct: %zu bytes\n", offset_std);
+
+    if (offset_numa != offset_std) {
+        printf("[CRITICAL] Offset Mismatch detected! __real_model_test is looking at wrong memory.\n");
+    }
+
+    printf("--- [DEBUG WRAPPER END] ---\n\n");
+
     return __real_model_test(&standard_nn, X, y, y_t, act, loss);
 }
 
 // Wrapper per forward_propagation
 void __wrap_forward_propagation(struct NeuralNet* nn_or_ws, char* activation_fun, char* loss) {
+
 
     // In questo contesto, nn_or_ws è SEMPRE un NNWorkerWorkspace*
     NNWorkerWorkspace* ws = (NNWorkerWorkspace*)nn_or_ws;
