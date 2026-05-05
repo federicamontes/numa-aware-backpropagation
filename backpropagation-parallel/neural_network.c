@@ -482,6 +482,11 @@ double* model_test(struct NeuralNet* nn, double** X_test, double** y_test, doubl
         }
         forward_propagation(nn, activation_fun, loss);
         loss_val += calc_loss(nn, loss);
+        if (i == 0) { // Just for the first test sample
+            printf("[DEBUG-TEST-FP] First Sample Output: ");
+            for(int j=1; j<=10; j++) printf("%.3f ", nn->out[nn->n_layers-1][j]);
+            printf("\n");
+        }
             
         for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
             if(nn->out[nn->n_layers-1][j] > max_val){
