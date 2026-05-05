@@ -10,6 +10,7 @@
 
 #define SYS_PES 156 
 
+#define DEBUG if(0)
 
 int main(int argc, char *argv[]) {
 
@@ -21,7 +22,7 @@ int main(int argc, char *argv[]) {
 
     // Setup parameters
     double learning_rate = 1e-4;
-    double init_lr = 1e-4;
+    double init_lr = 1e-3;
     char* activation_fun = "relu";
     char* loss = "ce";
     char* opt = "adam";
@@ -29,7 +30,7 @@ int main(int argc, char *argv[]) {
     #ifdef NUMA_API_ENABLED
     int batch_size = 256;
     #endif
-    int epochs = 5;
+    int epochs = 10;
 
     // Override via CLI if provided
     if (argc > 1) learning_rate = atof(argv[1]);
@@ -63,9 +64,9 @@ int main(int argc, char *argv[]) {
 
     // Create and initialize the neural network
     struct NeuralNet* nn = newNet(n_layers, n_neurons_per_layer);
-    printf("[PRE-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
+    DEBUG printf("[PRE-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
     init_nn(nn);
-    printf("[POST-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
+    DEBUG printf("[POST-INIT DEBUG] nn->out: %p, nn->out[0]: %p\n", (void*)nn->out, (void*)nn->out[0]);
     printf("[DEBUG] neural network ptr = %p\n", (void*)nn);
 
 
@@ -104,7 +105,7 @@ int main(int argc, char *argv[]) {
     for(int itr = 0; itr < epochs; itr++) {
         double* train_m = model_train(base_nn, X_train, y_train, y_train_temp, activation_fun, loss, opt, learning_rate, num_samples_to_train, itr+1);
 
-        printf("[DEBUG TEST] nn base: %p | out table: %p | out[0]: %p\n", 
+        DEBUG printf("[DEBUG TEST] nn base: %p | out table: %p | out[0]: %p\n", 
         (void*)nn, (void*)nn->out, (void*)nn->out ? nn->out[0] : NULL);
 
         double* test_m = model_test(base_nn, X_test, y_test, y_test_temp, activation_fun, loss);
@@ -113,6 +114,7 @@ int main(int argc, char *argv[]) {
 
         printf("Epoch: %02d | Train Loss: %.4f | Acc: %.4f | Test Loss: %.4f | Acc: %.4f\n", 
                 itr+1, train_m[0], train_m[1], test_m[0], test_m[1]);
+
 
         // Learning Rate Decay
         learning_rate = init_lr * exp(-0.1 * (itr+1));
