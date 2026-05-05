@@ -59,3 +59,8 @@ dkms.conf
 
 
 backpropagation-parallel/build/*
+backpropagation-parallel/metrics_64_32.txt
+backpropagation-parallel/*.csv
+backpropagation-parallel/nn_app*
+
+
