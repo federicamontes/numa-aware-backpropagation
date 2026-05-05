@@ -54,6 +54,7 @@ static void* global_mmap_start = NULL;
 static size_t global_mmap_total_size = 0;
 int num_numa_nodes = 1;
 
+#define DEBUG if(1)
 
 #define DISPLACEMENT (1<<21)
 #define SET_MEMORY(addr, value) \
@@ -66,13 +67,15 @@ int num_numa_nodes = 1;
 
 #define UPDATE_REPLICAS_GLOBAL(local_addr, delta) \
     do { \
-        uintptr_t offset = (uintptr_t)(local_addr) - (uintptr_t)base_address; \
-        /* 2. Applica a tutti i nodi partendo dal base_address reale */ \
-        for (int _n = 0; _n < num_numa_nodes; ++_n) { \
-            double* target = (double*)((char*)base_address + (_n * DISPLACEMENT) + offset); \
-            *target -= (delta); \
+        uintptr_t _l_addr = (uintptr_t)(local_addr); \
+        uintptr_t _base   = 0x1000000000; \
+        uintptr_t _offset = _l_addr - _base; \
+        for (int _n = 0; _n < num_numa_nodes; _n++) { \
+            uintptr_t _target_addr = _base + ((uintptr_t)_n * DISPLACEMENT) + _offset; \
+            double* _target = (double*)_target_addr; \
+            *_target -= (delta); \
         } \
-    } while(0)
+    } while (0)
 
 #define PES 156 //this depends on what the kernel tells you when mounting the vtpmo module
 
@@ -468,8 +471,11 @@ NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]) {
     
     size_t aligned_size = ALIGN_PAGE(raw_shared_size);
 
+    DEBUG printf("[DEBUG] Model Size: %zu bytes | Aligned Slab Size: %zu bytes\n", raw_shared_size, aligned_size);
     // allocation
     NeuralNet* nn_mapped = newNetSharedAlloc(n_layers, n_neurons_per_layer, aligned_size);
+
+    DEBUG printf("[DEBUG] Base nn_mapped (Slab 0): %p\n", (void*)nn_mapped);
 
     // init neural network for each numa node
     for (int i = 0; i < num_numa_nodes; i++) {
@@ -477,29 +483,43 @@ NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]) {
         NeuralNet *nn = (NeuralNet*)((char*)nn_mapped + i * aligned_size);
         
         if (nn != NULL) {
+            DEBUG printf("\n[DEBUG] --- Initializing Slab %d at %p ---\n", i, (void*)nn);
             nn->magic_test_value = (i == 0) ? 123.45 : 678.90; // Per testare il PTE switcher
             nn->n_layers = n_layers;
 
             srand(42); //set seed to avoid each numa node having different weights
 
-            // Prima di chiamare init_nn_shared, verifica i puntatori
-            if (nn->out == NULL || ((void**)nn->out)[0] == NULL) {
-                 printf("[ERROR] Puntatori già corrotti prima di init_nn per Nodo %d\n", i);
-            }
+            DEBUG printf("[DEBUG] Node %d: &nn->w is %p | &nn->out is %p\n", 
+                    i, (void*)&nn->w, (void*)&nn->out);
             // init neural network
             init_nn_shared(nn); 
 
-            if (nn->out[0] == NULL) {
-                printf("[ERROR] init_nn_shared ha azzerato i puntatori del Nodo %d!\n", i);
+            DEBUG {
+                printf("[DEBUG] Node %d Pointer Verification:\n", i);
+                printf("   -> Weight Top Level (nn->w):    %p\n", (void*)nn->w);
+            }
+            if (nn->w != NULL) {
+                printf("   -> Weight Row 0 (nn->w[0]):     %p\n", (void*)nn->w[0]);
+                if (nn->w[0] != NULL) {
+                    printf("   -> Weight [0][0][0] Addr:       %p | Val: %f\n", 
+                            (void*)&nn->w[0][0][0], nn->w[0][0][0]);
+                }
             }
 
-            printf("[GLOBAL SETUP] Node %d Slab at: %p | Weights[0] at: %p\n", 
+            DEBUG printf("   -> Output Top Level (nn->out):  %p\n", (void*)nn->out);
+            if (nn->out != NULL) {
+                printf("   -> Output Row 0 (nn->out[0]):   %p\n", (void*)nn->out[0]);
+            }
+
+            DEBUG printf("[GLOBAL SETUP] Node %d Slab at: %p | Weights[0] at: %p\n", 
                     i, (void*)nn, (void*)nn->w);
         } else {
             fprintf(stderr, "Error allocating network copy %d\n", i);
             exit(EXIT_FAILURE);
         }
     }
+
+    DEBUG printf("[Global Setup completed\n");
 
     return nn_mapped;
 }
@@ -560,7 +580,11 @@ void back_propagation_accumulate(NNWorkerWorkspace* ws, char* activation_fun, ch
 void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, int batch_size) {
     // Puntatore alla rete condivisa (dove risiedono i pesi reali)
     NeuralNet* nn = ws->shared_nn;
-    
+
+    static int debug_printed = 1;
+    // Use a static counter to only print for the very first weight of the very first batch
+    static int global_debug_done = 0;
+
     for(int k=0; k < nn->n_layers-1; k++){
         for(int j=1; j < nn->n_neurons_per_layer[k+1]+1; j++){
             
@@ -598,6 +622,13 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                 double grad_w = ws->dw[k][i][j] / (double)batch_size;
 
                 double delta_w = 0.0;
+                if (!debug_printed) {
+                    printf("[DEBUG MACRO] base_address global: %p\n", (void*)base_address);
+                    printf("[DEBUG MACRO] local_addr (w[0][1][1]): %p\n", (void*)&nn->w[k][i][j]);
+                    uintptr_t off = (uintptr_t)(&nn->w[k][i][j]) - (uintptr_t)base_address;
+                    printf("[DEBUG MACRO] Calculated Offset: %lu\n", off);
+                    debug_printed = 1;
+                }
                 
                 if(strcmp(opt, "sgd") == 0) {
                     delta_w = lr * grad_w;
@@ -614,12 +645,20 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                     //nn->w[k][i][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
                 }
                 
+                // [CRITICAL DEBUG] Only print for the first weight of the first batch
+                if (!global_debug_done) {
+                    printf("[DEBUG-UPDATE] Child %d | Layer %d | W[0][1][1] Addr: %p | Delta: %.10f | Grad: %.10f\n", 
+                            getpid(), k, (void*)&nn->w[k][i][j], delta_w, grad_w);
+                    global_debug_done = 1; 
+                }
+
                 UPDATE_REPLICAS_GLOBAL(&(nn->w[k][i][j]), delta_w);
                 // Azzero il gradiente locale nel Workspace
                 ws->dw[k][i][j] = 0.0;
             }
         }
     }
+    debug_printed = 1; // Reset for next batch
 }
 
 
@@ -796,6 +835,9 @@ double* new_model_train(struct NNWorkerWorkspace* ws, double** X_train, double**
     // Puntatore di comodo alla rete condivisa
     NeuralNet* nn_shared = ws->shared_nn;
 
+    // Monitor a weight that is actually likely to change (not just 0,0,0)
+    double initial_w = nn_shared->w[0][10][10];
+    DEBUG printf("[TRAIN-START] Child %d monitoring w[0][10][10]: %f\n", getpid(), initial_w);
     // 1. Setup indici (Shuffle) - Assicurati che N_SAMPLES sia definito o usa num_samples_to_train
     int* arr = malloc(num_samples_to_train * sizeof(int));
     for(int i = 0; i < num_samples_to_train; i++) arr[i] = i;
@@ -846,19 +888,27 @@ double* new_model_train(struct NNWorkerWorkspace* ws, double** X_train, double**
             back_propagation_accumulate(ws, activation_fun, loss);
         }
 
+
         // Fine Batch: Applica i gradienti del workspace ai pesi reali (Shared)
         update_weights_batch(ws, learning_rate, opt, itr, cur_batch);
     }
 
-    // Calcolo medie finali
-    loss_val /= (double)num_samples_to_train;
-    double accuracy = (double)correct / (double)num_samples_to_train;
-    
-    free(arr); // Non dimenticare di liberare la memoria dello shuffle
+    DEBUG {
+        double final_w = nn_shared->w[0][10][10];
+        printf("[TRAIN-END] Child %d | Initial W: %f | Final W: %f | Delta: %f\n", 
+                getpid(), initial_w, final_w, final_w - initial_w);
+
+        if (final_w == initial_w) {
+            printf("[CRITICAL] Weights did not move! Check if update_weights_batch uses the macro.\n");
+        }
+    }
+
+    free(arr); // free shuffle array
 
     static double metrics[2];
     metrics[0] = loss_val;
-    metrics[1] = accuracy;
+    metrics[1] = (double)correct;
+    //metrics[1] = accuracy;
     return metrics;
 }
 
@@ -934,10 +984,14 @@ void pin_process_to_node(int rank, int target_node) {
  *  private memory management
  *  and actual training with forward/back propagation
  * */
-double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** y_train, double* y_train_temp, char* activation_fun, char* loss, char* opt, double learning_rate, int total_samples, int itr, int batch_size, int n_workers) {
+double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** y_train, double* y_train_temp, 
+    char* activation_fun, char* loss, char* opt, double learning_rate, int total_samples, int itr, int batch_size, int n_workers) {
 
-    printf("[DEBUG] NN: %p, X_train[0]: %p, y_train[0]: %p\n", (void*)base_nn, (void*)X_train[0], (void*)y_train[0]);
-    // 1. Memoria condivisa per raccogliere Loss e Accuracy da ogni processo
+    DEBUG {
+        printf("\n[DEBUG-PARALLEL] --- MASTER START ---\n");
+        printf("[DEBUG] NN: %p, X_train[0]: %p, y_train[0]: %p\n", (void*)base_nn, (void*)X_train[0], (void*)y_train[0]);
+    }
+    // Memoria condivisa per raccogliere Loss e Accuracy da ogni processo
     double* shared_metrics = mmap(NULL, n_workers * 2 * sizeof(double), 
                                   PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 
@@ -957,6 +1011,9 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             perror("fork failed");
             exit(EXIT_FAILURE);
         }
+        if (pid > 0) {
+            printf("[PARENT] Just spawned child %d (Rank %d)\n", pid, rank);
+        }
 
         if (pid == 0) {
             
@@ -965,6 +1022,12 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             // set affinity
             pin_process_to_node(rank, my_node);
 
+            DEBUG {
+                printf("\n[CHILD %d] --- PRE-SYSCALL ---\n", rank);
+                printf("[CHILD %d] Virtual Base: %p | Magic: %f | Weight[0][0][0]: %f\n", 
+                   rank, (void*)base_nn, base_nn->magic_test_value, base_nn->w[0][0][0]);
+            }
+
             // memory touch to create ptes in child
             volatile char* touch_ptr = (char*)base_nn;
             for (int n = 0; n < num_numa_nodes; n++) {
@@ -972,32 +1035,45 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
                 touch_ptr[n * PAGE_ALIGNMENT] = c;
             }
 
-            printf("Valore prima della syscall: %f\n", base_nn->magic_test_value);
             // pte switch on my_node memory view e.g. (base_addres, 0, my_node)
             long ret = pes((unsigned long) base_nn, 0, my_node);
             if (ret < 0) {
                 fprintf(stderr, "CRITICAL: pes syscall failed for node %d\n", my_node);
                 exit(EXIT_FAILURE);
             }
-            printf("Valore dopo la syscall: %f\n", base_nn->magic_test_value);
 
+            DEBUG {
+                printf("[CHILD %d] --- POST-SYSCALL (Node %d View) ---\n", rank, my_node);
+                printf("[CHILD %d] Virtual Base: %p | Magic: %f | Weight[0][0][0]: %f\n", 
+                   rank, (void*)base_nn, base_nn->magic_test_value, base_nn->w[0][0][0]);
+            }
             
             // allocate private memory
             struct NNWorkerWorkspace *local_nn = setup_worker_workspace(base_nn, rank, my_node);
 
-            printf("[DEBUG] neural network LOCAL ptr = %p\n", local_nn);
-            printf("[DEBUG PID FIGLIO %d] nn->out[0] address: %p\n", getpid(), (NNWorkerWorkspace*)local_nn->out[0]);
+            DEBUG {
+                printf("[CHILD %d] --- WORKER WORKSPACE ---\n", rank);
+                printf("[CHILD %d] Local Workspace Ptr: %p\n", rank, (void*)local_nn);
+                printf("[CHILD %d] Shared_NN Link: %p | Weight Ptr: %p | Val: %f\n", 
+                   rank, (void*)local_nn->shared_nn, (void*)local_nn->shared_nn->w[0][0], local_nn->shared_nn->w[0][0][0]);
+            }
+
             // training set partitioning
             int samples_per_worker = total_samples / n_workers;
             int start = rank * samples_per_worker;
             // remainder to last worker
             int count = (rank == n_workers - 1) ? (total_samples - start) : samples_per_worker;
 
+
             // model training
             double* results = new_model_train(local_nn, X_train, y_train, y_train_temp, 
                                                         activation_fun, loss, opt, learning_rate, 
                                                         count, itr, batch_size);
 
+            DEBUG {
+                printf("[CHILD %d] --- POST-TRAINING ---\n", rank);
+                printf("[CHILD %d] Weight[0][0][0] AFTER update: %f\n", rank, local_nn->shared_nn->w[0][0][0]);
+            }
             // E. Scrittura risultati e uscita
             shared_metrics[rank * 2] = results[0];
             shared_metrics[rank * 2 + 1] = results[1];
@@ -1013,16 +1089,25 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
         wait(NULL);
     }
 
-    double* final_metrics = malloc(2 * sizeof(double));
-    final_metrics[0] = 0; final_metrics[1] = 0;
+    DEBUG {
+        printf("\n[DEBUG-PARALLEL] --- PARENT FINAL CHECK ---\n");
+        printf("[PARENT] Final Weight[0][0][0]: %f (Initial: 0.000006)\n", base_nn->w[0][0][0]);
+    }
+
+    double total_loss_sum = 0;
+    double total_correct_sum = 0;
 
     for (int i = 0; i < n_workers; i++) {
-        final_metrics[0] += shared_metrics[i * 2];     // Somma Loss
-        final_metrics[1] += shared_metrics[i * 2 + 1]; // Somma Acc
+        total_loss_sum += shared_metrics[i * 2];
+        total_correct_sum += shared_metrics[i * 2 + 1];
     }
-    final_metrics[0] /= n_workers; // Media
-    final_metrics[1] /= n_workers; // Media
 
+    double* final_metrics = malloc(2 * sizeof(double));
+    // Media reale pesata su tutti i campioni
+    final_metrics[0] = total_loss_sum / total_samples;
+    final_metrics[1] = total_correct_sum / (double)total_samples;
+
+    munmap(shared_metrics, n_workers * 2 * sizeof(double));
     return final_metrics;
 
 
