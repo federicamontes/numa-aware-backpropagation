@@ -16,25 +16,36 @@ To build and run this project, you need:
     Math Library: The standard C math library (-lm flag is required).
 
     NUMA library: -lnuma required  
+ 	- Install on Ubuntu/Debian: sudo apt install libnuma-dev
 
 * Building the Project
 
-Use the provided Makefile to compile the source file (neural_network.c)
+Use the provided Makefile to compile the project
 
 	Clean generated files:
 	make clean
-	# Removes the executable (nn_parallel) and object files (*.o)
+	# Removes the executable and object files (*.o)
 
-    Compile the executable:
-	make
-	# Creates the executable: nn_parallel
+## Compile Sequential Mode
+	make NUMA=0 or simply make
+	# Creates the executable: nn_app_std
 
 	Unzip mnist dataset → it contains training and testing set
 
-You can then run the executable:
-#	./nn_parallel
+## Compile NUMA-aware Mode
+	make NUMA=1
+	# Creates the executable: nn_app_numa
 
-For now it does not take parameters as the configuration (optimizer, activation function..) is hardcode in main function
+	Load Modules:
+	make modules-load
+
+	Unload Modules:
+	make modules-unload
+
+You can then run the executable:
+#	./nn_app_std if NUMA=0
+#   ./nn_app_numa if NUMA=1
+
 
 It does create an output file called metrics_63_32.txt which format is
 #	train_loss,train_acc,test_loss,test_acc
@@ -42,37 +53,30 @@ It does create an output file called metrics_63_32.txt which format is
 
 ```bash
 .
-├── backpropagation-original
-│   ├── activation.h
-│   ├── Makefile
-│   ├── metrics_64_32.txt
-│   ├── mnist_t.zip
-│   ├── neural_network.c
-│   ├── Project Report.pdf
-│   ├── read_data.h
-│   └── README.md
-├── backpropagation-parallel
-│   ├── activation.h
-│   ├── Makefile
-│   ├── metrics_64_32.txt
-│   ├── mnist_t.zip
-│   ├── neural_network.c
-│   ├── read_data.h
-│   └── README.md
-├── pte-entry-switcher
-│   ├── Linux-sys_call_table-discoverer
-│   │   ├── include
-│   │   ├── lib
-│   │   ├── load.sh
-│   │   ├── Makefile
-│   │   ├── unload.sh
-│   │   ├── usctm.c
-│   │   └── user
-│   └── PTE-entry-switcher
-│       ├── lib
-│       ├── Makefile
-│       ├── pte-entry-switcher.c
-│       └── user
-└── README.md
+├── backpropagation-original/        # BASELINE: Standard sequential implementation
+│   ├── neural_network.c             # Original ML logic (non-instrumented)
+│   ├── activation.h                 # Standard activation functions
+│   ├── read_data.h                  # MNIST CSV loader
+│   └── Makefile                     # Build script for baseline execution
+│
+├── backpropagation-parallel/        # INSTRUMENTED: NUMA-aware parallel framework
+│   ├── main.c                       # Orchestrator: handles fork(), pinning, and slabs
+│   ├── neural_network.c             # Instrumented ML logic for parallel execution
+│   ├── numa_api.c                   # Interface for LKM syscall communication
+│   ├── wrappers.c                   # Linker-level wrappers for transparent execution
+│   ├── activation.h                 # Shared math headers
+│   ├── read_data.h                  # Shared data loading logic
+│   └── Makefile                     # Build script for std/numa targets (nn_app_std/numa)
+│
+├── pte-entry-switcher/              # KERNEL: LKM support infrastructure
+│   ├── PTE-entry-switcher/          # Core module for dynamic Page Table manipulation
+│   │   └── pte-entry-switcher.c     # Implementation of the custom PTE-switch syscall
+│   └── Linux-sys_call_table.../     # Kernel utility to locate the sys_call_table
+│       ├── lib/                     # Support libraries for table discovery
+│       └── usctm.c                  # System Call Table Modifier implementation
+│
+├── Project Report.pdf               # Comprehensive technical documentation
+├── README.md                        # Project overview and architecture (This file)
+└── TODO.txt                         # Development roadmap and pending tasks
 
 ```
