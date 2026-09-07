@@ -35,9 +35,6 @@ static inline int pes_syscall(unsigned long vaddr, int index_a, int index_b) {
     return (int)syscall(PES, vaddr, index_a, index_b);
 }
 
-/**
- * Propagate weight and bias updates across all physical NUMA slabs.
- */
 #define UPDATE_REPLICAS_GLOBAL(local_addr, delta_val, slab_size, num_nodes) do {    \
     uintptr_t _l_addr = (uintptr_t)(local_addr);                                   \
     uintptr_t _base   = (uintptr_t)global_mmap_start;                             \
@@ -49,7 +46,6 @@ static inline int pes_syscall(unsigned long vaddr, int index_a, int index_b) {
     }                                                                             \
 } while (0)
 
-// Sizing for the shared NUMA slab (w, b, and Adam momentum_w, momentum_b)
 size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[]) {
     size_t size = 0;
 
@@ -58,26 +54,21 @@ size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[])
     size += (size_t)n_layers * sizeof(int);
     size = ALIGN_CACHELINE(size);
 
-    // Top-Level Pointers: w, momentum_w, momentum2_w (3 tables)
-    size += (size_t)(n_layers - 1) * 3 * sizeof(double***);
-    // Top-Level Pointers: b, momentum_b, momentum2_b (3 tables)
-    size += (size_t)(n_layers - 1) * 3 * sizeof(double*);
+    size += (size_t)(n_layers - 1) * 3 * sizeof(double***); // w, mw, mw2
+    size += (size_t)(n_layers - 1) * 3 * sizeof(double*);   // b, mb, mb2
     size = ALIGN_CACHELINE(size);
 
-    // Row Pointers for w, momentum_w, momentum2_w
     for (int i = 0; i < n_layers - 1; i++) {
         size_t n_in = (size_t)(n_neurons_per_layer[i] + 1);
         size += n_in * 3 * sizeof(double*);
     }
     size = ALIGN_CACHELINE(size);
 
-    // Bias data: b, momentum_b, momentum2_b
     for (int i = 0; i < n_layers - 1; i++) {
         size_t n_out = (size_t)(n_neurons_per_layer[i+1] + 1);
         size += ALIGN_CACHELINE(n_out * 3 * sizeof(double));
     }
 
-    // Weight data: w, momentum_w, momentum2_w
     for (int i = 0; i < n_layers - 1; i++) {
         size_t n_in  = (size_t)(n_neurons_per_layer[i] + 1);
         size_t n_out = (size_t)(n_neurons_per_layer[i+1] + 1);
@@ -164,7 +155,6 @@ NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t ali
         nn->momentum_b  = (double**)V_ADDR;  curr += (n_layers - 1) * sizeof(double*);
         nn->momentum2_b = (double**)V_ADDR;  curr += (n_layers - 1) * sizeof(double*);
 
-        // Row pointers
         curr = ALIGN_CACHELINE_PTR(curr);
         for (int i = 0; i < n_layers - 1; i++) {
             int n_in = n_neurons_per_layer[i] + 1;
@@ -177,7 +167,6 @@ NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t ali
             mw2_phys[i] = (double**)V_ADDR; curr += n_in * sizeof(double*);
         }
 
-        // Bias data & momentum
         curr = ALIGN_CACHELINE_PTR(curr);
         for (int i = 0; i < n_layers - 1; i++) {
             int n_out = n_neurons_per_layer[i+1] + 1;
@@ -190,7 +179,6 @@ NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t ali
             mb2_phys[i] = (double*)V_ADDR; curr += ALIGN_CACHELINE(n_out * sizeof(double));
         }
 
-        // Weight data & momentum
         for (int i = 0; i < n_layers - 1; i++) {
             int n_in  = n_neurons_per_layer[i] + 1;
             int n_out = n_neurons_per_layer[i+1] + 1;
@@ -227,18 +215,28 @@ void unmap_nn(void) {
     }
 }
 
+/**
+ * FIXED: Uses the exact same loop indexing as init_nn() in neural_network.c
+ * so that randn() calls match identically.
+ */
 void init_nn_shared(struct NeuralNet* nn) {
     for (int k = 0; k < nn->n_layers - 1; k++) {
-        int n_in = nn->n_neurons_per_layer[k] + 1;
+        int n_in  = nn->n_neurons_per_layer[k] + 1;
         int n_out = nn->n_neurons_per_layer[k+1] + 1;
 
-        for (int i = 0; i < n_in; i++) {
-            nn->b[k][i] = 0.0;
-            nn->momentum_b[k][i] = 0.0;
-            nn->momentum2_b[k][i] = 0.0;
+        for (int j = 0; j < n_out; j++) {
+            nn->b[k][j] = 0.0;
+            nn->momentum_b[k][j] = 0.0;
+            nn->momentum2_b[k][j] = 0.0;
+        }
 
+        for (int i = 0; i < n_in; i++) {
             for (int j = 0; j < n_out; j++) {
-                nn->w[k][i][j] = randn();
+                if (i >= 1 && j >= 1) {
+                    nn->w[k][i][j] = randn();
+                } else {
+                    nn->w[k][i][j] = 0.0;
+                }
                 nn->momentum_w[k][i][j] = 0.0;
                 nn->momentum2_w[k][i][j] = 0.0;
             }
@@ -266,10 +264,6 @@ struct NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]) {
     return nn_mapped;
 }
 
-/**
- * Initializes transient working buffers (in, out, delta, dw, db, targets).
- * Places them in process-private memory via First-Touch NUMA locality.
- */
 void init_process_working_buffers(struct NeuralNet* nn) {
     int n_layers = nn->n_layers;
 
@@ -345,9 +339,6 @@ int activate_numa_view(int numa_node_id, void* base_ptr, size_t base_nn_size) {
         return -1;
     }
 
-    DEBUG printf("[NUMA-ACTIVATE] Process %d active on Node %d (Swapped PDE 0 <-> %d)\n",
-                 getpid(), numa_node_id, pde_index_target);
-
     return 0;
 }
 
@@ -392,14 +383,12 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
     for (int k = 0; k < nn->n_layers - 1; k++) {
         for (int j = 1; j <= nn->n_neurons_per_layer[k + 1]; j++) {
             
-            // Bias Update
             double grad_b = nn->db[k][j] / (double)batch_size;
             double delta_b = 0.0;
 
             if (strcmp(opt, "sgd") == 0) {
                 delta_b = lr * grad_b;
             } else if (strcmp(opt, "adam") == 0) {
-                // Persistent momentum located in local NUMA slab
                 nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * grad_b;
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * grad_b * grad_b;
 
@@ -411,7 +400,6 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
             UPDATE_REPLICAS_GLOBAL(&(nn->b[k][j]), delta_b, global_aligned_slab_size, num_numa_nodes);
             nn->db[k][j] = 0.0;
 
-            // Weight Matrix Update
             for (int i = 1; i <= nn->n_neurons_per_layer[k]; i++) {
                 double grad_w = nn->dw[k][i][j] / (double)batch_size;
                 double delta_w = 0.0;
@@ -419,7 +407,6 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
                 if (strcmp(opt, "sgd") == 0) {
                     delta_w = lr * grad_w;
                 } else if (strcmp(opt, "adam") == 0) {
-                    // Persistent momentum located in local NUMA slab
                     nn->momentum_w[k][i][j] = beta_1 * nn->momentum_w[k][i][j] + (1.0 - beta_1) * grad_w;
                     nn->momentum2_w[k][i][j] = beta_2 * nn->momentum2_w[k][i][j] + (1.0 - beta_2) * grad_w * grad_w;
 
@@ -467,10 +454,10 @@ double* new_model_train(struct NeuralNet* nn, double** X_train, double** y_train
                 if (strcmp(loss, "mse") == 0)
                     loss_val += 0.5 * pow(nn->out[last][j] - nn->targets[j], 2);
                 else
-                    loss_val -= nn->targets[j] * log(nn->out[last][j] + 1e-15);
+                    loss_val -= nn->targets[j] * log(nn->out[last][j]);
             }
 
-            double max_v = -1.0; int pred = -1;
+            double max_v = (double)INT_MIN; int pred = -1;
             for (int j = 1; j <= nn->n_neurons_per_layer[last]; j++) {
                 if (nn->out[last][j] > max_v) {
                     max_v = nn->out[last][j];
@@ -488,8 +475,8 @@ double* new_model_train(struct NeuralNet* nn, double** X_train, double** y_train
     free(arr);
 
     static double metrics[2];
-    metrics[0] = loss_val;
-    metrics[1] = (double)correct;
+    metrics[0] = loss_val / (double)num_samples_to_train;
+    metrics[1] = (double)correct / (double)num_samples_to_train;
     return metrics;
 }
 
@@ -572,13 +559,11 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             int my_node = rank % num_numa_nodes;
             pin_process_to_node(rank, my_node);
 
-            // 1. Activate shared NUMA view for this node
             if (activate_numa_view(my_node, base_nn, global_aligned_slab_size) < 0) {
                 fprintf(stderr, "[WORKER %d] Failed to activate NUMA view for Node %d\n", rank, my_node);
                 exit(EXIT_FAILURE);
             }
 
-            // 2. Setup transparent struct instance
             struct NeuralNet local_nn;
             local_nn.magic_test_value    = base_nn->magic_test_value;
             local_nn.n_layers            = base_nn->n_layers;
@@ -590,7 +575,6 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             local_nn.momentum_b          = base_nn->momentum_b;   // 0x1000000000 (Persistent Node k)
             local_nn.momentum2_b         = base_nn->momentum2_b;  // 0x1000000000 (Persistent Node k)
 
-            // 3. Initialize process-private working buffers
             init_process_working_buffers(&local_nn);
 
             int samples_per_worker = total_samples / n_workers;
@@ -604,8 +588,8 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
                                              activation_fun, loss, opt, learning_rate, 
                                              count, itr, batch_size);
 
-            shared_metrics[rank * 2]     = results[0];
-            shared_metrics[rank * 2 + 1] = results[1];
+            shared_metrics[rank * 2]     = results[0] * (double)count;
+            shared_metrics[rank * 2 + 1] = results[1] * (double)count;
 
             free_process_working_buffers(&local_nn);
             exit(0);
