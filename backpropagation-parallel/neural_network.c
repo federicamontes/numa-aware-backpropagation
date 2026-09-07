@@ -301,9 +301,9 @@ void back_propagation(struct NeuralNet* nn, char* activation_fun, double learnin
 
             // weighted sum of deltas of next layer
             double sum = 0.0;
-            for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){ //check this loop it might be wrong
+            /*for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){ //check this loop it might be wrong
                 sum += nn->b[k][j] * nn->delta[k+1][j];
-            }
+            }*/
             for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){
                 sum += nn->w[k][i][j] * nn->delta[k+1][j];
             }
@@ -405,58 +405,45 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
                     char* activation_fun, char* loss, char* opt, double learning_rate,
                     int num_samples_to_train, int itr){
 
-    // Create an array for generating random permutation of training sample indices
-    int arr[N_SAMPLES]; //all samples
-    for(int i=0;i<N_SAMPLES;i++){
-        arr[i] = i;
-    }
-    shuffle(arr, N_SAMPLES); //shuffle array
+    int* arr = malloc(num_samples_to_train * sizeof(int));
+    for (int i = 0; i < num_samples_to_train; i++) arr[i] = i;
+    shuffle(arr, num_samples_to_train);
 
-    int shuffler[num_samples_to_train]; //only the samples used in this epoch
-    for(int i=0;i<num_samples_to_train;i++){
-        shuffler[i] = arr[i];
-    }
-
-    // Start training the model for 1 epoch and simultaneously calculate the training error and accuracy
     int correct = 0;
     double loss_val = 0.0;
+    int last_layer = nn->n_layers - 1;
 
-    for(int i=0;i<num_samples_to_train;i++){ //for each sample
+    for (int i = 0; i < num_samples_to_train; i++) {
+        int idx = arr[i];
 
-        //shuffle(shuffler, num_samples_to_train); //it doesn't seem to have any impact since arr[i] has already been shuffled before
-
-        int idx = -1; //predicted class init
-        double max_val = (double)INT_MIN;
-
-        // arr[i] is a random index
-        for(int j=1;j<nn->n_neurons_per_layer[0]+1;j++){
-            // out[0] is the input layer, load the training set
-            nn->out[0][j] = X_train[arr[i]][j-1];
+        for (int j = 1; j <= nn->n_neurons_per_layer[0]; j++) {
+            nn->out[0][j] = X_train[idx][j-1];
         }
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
-            // targets is the desired output, load the labels
-            nn->targets[j] = y_train[arr[i]][j-1];
+        for (int j = 1; j <= nn->n_neurons_per_layer[last_layer]; j++) {
+            nn->targets[j] = y_train[idx][j-1];
         }
 
         forward_propagation(nn, activation_fun, loss);
         back_propagation(nn, activation_fun, learning_rate, loss, opt, itr);
-        loss_val += calc_loss(nn, loss); // compute and accumulate loss
+        loss_val += calc_loss(nn, loss);
             
-        // compute max and class predicted
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
-            if(nn->out[nn->n_layers-1][j] > max_val){
-                max_val =nn->out[nn->n_layers-1][j];
-                idx = j-1;
+        double max_val = -INFINITY;
+        int pred = -1;
+        for (int j = 1; j <= nn->n_neurons_per_layer[last_layer]; j++) {
+            if (nn->out[last_layer][j] > max_val) {
+                max_val = nn->out[last_layer][j];
+                idx = j - 1;
             }
         }
-        if(idx == (int)y_train_temp[arr[i]]){
+        if (idx == (int)y_train_temp[arr[i]]) {
             correct++;
         }
     }
 
-    //avg loss
-    loss_val /=(double)num_samples_to_train;
-    double accuracy = (double)correct/(double)num_samples_to_train;
+    free(arr);
+
+    loss_val /= (double)num_samples_to_train;
+    double accuracy = (double)correct / (double)num_samples_to_train;
     static double metrics[2];
     metrics[0] = loss_val;
     metrics[1] = accuracy;
