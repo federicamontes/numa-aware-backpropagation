@@ -21,7 +21,6 @@
 #include "neural_network.h"
 #include "activation.h"
 
-// In cima a numa_api.c o dentro neural_network.h
 extern double* new_model_train(struct NNWorkerWorkspace* nn, double** X_train, double** y_train, double* y_train_temp, 
                                char* activation_fun, char* loss, char* opt, double learning_rate,
                                int num_samples_to_train, int itr, int batch_size);
@@ -52,18 +51,18 @@ NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]);
 unsigned long base_address = 0x1000000000; // Aligned to 2MB
 static void* global_mmap_start = NULL;
 static size_t global_mmap_total_size = 0;
-int num_numa_nodes = 1;
+int num_numa_nodes = 1; 
 
 #define DEBUG if(1)
 
 #define DISPLACEMENT (1<<21)
-#define SET_MEMORY(addr, value) \
+/*#define SET_MEMORY(addr, value) \
     do { \
         *(addr) = (value); \
     for (int _i = 1; _i < (num_numa_nodes); ++_i){ \
             *((typeof(addr))((char*)(addr) + _i * (DISPLACEMENT))) = *(addr); \
     } \
-    } while(0)
+    } while(0)*/
 
 #define UPDATE_REPLICAS_GLOBAL(local_addr, delta) \
     do { \
@@ -217,27 +216,27 @@ size_t calculate_private_workspace_size(int n_layers, const int n_neurons_per_la
 size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]) {
     size_t size = 0;
     
-    // 1. Struttura base + array architettura
+    // Struttura base + array architettura
     size += sizeof(struct NeuralNet);
     size = ALIGN_SIZE(size);
     size += (size_t)n_layers * sizeof(int);
     size = ALIGN_SIZE(size);
     
-    // 2. Puntatori top-level (w, b, in, out)
+    // Puntatori top-level (w, b, in, out)
     size += (size_t)(n_layers - 1) * sizeof(double**); // w
     size += (size_t)(n_layers - 1) * sizeof(double*);  // b
     size += (size_t)n_layers * sizeof(double*);        // in
     size += (size_t)n_layers * sizeof(double*);        // out
     size = ALIGN_SIZE(size);
 
-    // 3. Puntatori di riga per i pesi (w[i][j])
+    // Puntatori di riga per i pesi (w[i][j])
     for (int i = 0; i < n_layers - 1; i++) {
         size_t n_in = (size_t)(n_neurons_per_layer[i] + 1);
         size += n_in * sizeof(double*); 
     }
     size = ALIGN_SIZE(size);
 
-    // 4. Dati Reali: Pesi (w) e Bias (b)
+    // Dati Reali: Pesi (w) e Bias (b)
     for (int i = 0; i < n_layers - 1; i++) {
         size_t n_in  = (size_t)(n_neurons_per_layer[i] + 1);
         size_t n_out = (size_t)(n_neurons_per_layer[i+1] + 1);
@@ -247,7 +246,7 @@ size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]
     }
     size = ALIGN_SIZE(size);
 
-    // 5. Dati Reali: Attivazioni (in, out)
+    // Dati Reali: Activations (in, out)
     for (int i = 0; i < n_layers; i++) {
         size_t n = (size_t)(n_neurons_per_layer[i] + 1);
         size += n * sizeof(double); // in[i]
@@ -255,7 +254,7 @@ size_t calculate_shared_model_size(int n_layers, const int n_neurons_per_layer[]
     }
     size = ALIGN_SIZE(size);
 
-    // 6. Dati Reali: Targets
+    // Dati Reali: Targets
     size += (size_t)(n_neurons_per_layer[n_layers-1] + 1) * sizeof(double);
     size = ALIGN_SIZE(size);
 
@@ -360,7 +359,7 @@ NeuralNet* newNetSharedAlloc(int n_layers, int n_neurons_per_layer[], size_t ali
         curr = (char*)ALIGN_BLOCK(curr);
         for (int i = 0; i < n_layers - 1; i++) {
             int n_in = n_neurons_per_layer[i] + 1;
-            // Scriviamo nella tabella fisica dei puntatori (nn->w è virtuale, non usiamolo!)
+            // Scriviamo nella tabella fisica dei puntatori
             // Troviamo la posizione fisica di nn->w[i]
             double*** w_top_phys = (double***)(net_addr + ((char*)nn->w - virtual_base));
             w_top_phys[i] = (double**)V_ADDR; 
@@ -578,7 +577,7 @@ void back_propagation_accumulate(NNWorkerWorkspace* ws, char* activation_fun, ch
  * e applicandoli al modello condiviso (shared_nn).
  */
 void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, int batch_size) {
-    // Puntatore alla rete condivisa (dove risiedono i pesi reali)
+    // ptr to shared network
     NeuralNet* nn = ws->shared_nn;
 
     static int debug_printed = 1;
@@ -588,8 +587,8 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
     for(int k=0; k < nn->n_layers-1; k++){
         for(int j=1; j < nn->n_neurons_per_layer[k+1]+1; j++){
             
-            // 1. Update BIAS sul modello condiviso
-            // Usiamo il gradiente locale (ws->db) ma modifichiamo il bias globale (nn->b)
+            // Update BIAS on shared network
+            // use local gradient (ws->db) but modify global bias (nn->b)
             double grad_b = ws->db[k][j] / (double)batch_size;
             
             double delta_b = 0.0;
@@ -614,10 +613,10 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
             // apply delta to all replicas (subtraction is inside macro)
             UPDATE_REPLICAS_GLOBAL(&(nn->b[k][j]), delta_b);
 
-            // Azzero il gradiente locale nel Workspace per il prossimo batch
+            // zero local gradient for next batch
             ws->db[k][j] = 0.0;
 
-            // 2. Update WEIGHTS sul modello condiviso
+            // Update WEIGHTS on shared network
             for(int i=1; i < nn->n_neurons_per_layer[k]+1; i++){
                 double grad_w = ws->dw[k][i][j] / (double)batch_size;
 
@@ -645,7 +644,6 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                     //nn->w[k][i][j] -= (lr * m_cap) / (sqrt(v_cap) + epsilon);
                 }
                 
-                // [CRITICAL DEBUG] Only print for the first weight of the first batch
                 if (!global_debug_done) {
                     printf("[DEBUG-UPDATE] Child %d | Layer %d | W[0][1][1] Addr: %p | Delta: %.10f | Grad: %.10f\n", 
                             getpid(), k, (void*)&nn->w[k][i][j], delta_w, grad_w);
@@ -653,7 +651,7 @@ void update_weights_batch(NNWorkerWorkspace* ws, double lr, char* opt, int itr, 
                 }
 
                 UPDATE_REPLICAS_GLOBAL(&(nn->w[k][i][j]), delta_w);
-                // Azzero il gradiente locale nel Workspace
+                // zero local gradient
                 ws->dw[k][i][j] = 0.0;
             }
         }

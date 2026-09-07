@@ -5,14 +5,12 @@
 #include "neural_network.h"
 #include <unistd.h> // Per getpid()
 
-// Dichiarazione delle funzioni reali (servono per il fallback)
 extern struct NeuralNet* __real_newNet(int n_layers, int n_neurons_per_layer[]);
 extern void __real_free_NN(NeuralNet* nn);
 extern void __real_init_nn(struct NeuralNet* nn);
 extern double* __real_model_train(struct NeuralNet* nn, double** X, double** y, double* y_t, 
                                       char* act, char* loss, char* opt, double lr, int samples, int ep);
 
-// Dichiarazione della funzione reale che usa la struct "Standard"
 extern double* __real_model_test(struct NeuralNet* nn, double** X, double** y, 
                                  double* y_t, char* act, char* loss);
 
@@ -42,15 +40,15 @@ double* __wrap_model_train(struct NeuralNet* nn, double** X, double** y, double*
                            char* act, char* loss, char* opt, double lr, int samples, int ep) {
     
     // TODO change these parameters in some way
-    int batch = 256; 
-    int nproc = 2; // 0 = usa tutti i core disponibili
+    int batch = 1; 
+    int nproc = 1; // 0 = usa tutti i core disponibili
 
     printf("[NUMA-AUTO] Intercepted model_train -> Executing parallel_training\n");
     return parallel_training(nn, X, y, y_t, act, loss, opt, lr, samples, ep, batch, nproc);
 }
 
 
-// Wrapper che intercetta la chiamata dal main
+// Wrapper that intercepts model test called by parent process after model train
 double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y, 
                                  double* y_t, char* act, char* loss) {
     
@@ -58,7 +56,7 @@ double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y,
     printf("[WRAP] Intercepted model_test. NUMA Struct At: %p\n", (void*)nn_numa);
     printf("[WRAP] Magic Value: %f (Expected 123.45)\n", nn_numa->magic_test_value);
     
-    // 1. Check if the Parent actually has a valid 'out' table
+    // Check if the Parent actually has a valid 'out' table
     if (nn_numa->out == NULL || nn_numa->out[0] == NULL) {
         printf("[ERROR] Parent 'out' pointers are NULL! model_test will segfault or fail.\n");
     } else {
@@ -68,7 +66,7 @@ double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y,
                 (void*)nn_numa->out, (void*)nn_numa->out[0]);
     }
 
-    // 2. Setup the "Fake" standard struct
+    // setup the bridge neural network struct
     struct NeuralNet standard_nn;
     printf("[WRAP] Fake Standard Struct Allocated on Stack at: %p\n", (void*)&standard_nn);
 
@@ -81,8 +79,8 @@ double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y,
     standard_nn.out = nn_numa->out;  
     standard_nn.targets = nn_numa->targets;
 
-    // 3. OFFSET CHECK: This is the most likely culprit
-    // We check where the 'out' pointer is relative to the start of the struct
+    // OFFSET CHECK
+    // We check where the 'out' pointer offset is relative to the start of the struct
     size_t offset_numa = (size_t)&(nn_numa->out) - (size_t)nn_numa;
     size_t offset_std  = (size_t)&(standard_nn.out) - (size_t)&standard_nn;
     
@@ -99,17 +97,15 @@ double* __wrap_model_test(struct NeuralNet* nn_numa, double** X, double** y,
     return __real_model_test(&standard_nn, X, y, y_t, act, loss);
 }
 
-// Wrapper per forward_propagation
+// Wrapper of forward_propagation
 void __wrap_forward_propagation(struct NeuralNet* nn_or_ws, char* activation_fun, char* loss) {
 
 
-    // In questo contesto, nn_or_ws è SEMPRE un NNWorkerWorkspace*
     NNWorkerWorkspace* ws = (NNWorkerWorkspace*)nn_or_ws;
 
-    // Creiamo l'adapter locale per parlare con la funzione sequenziale
+    // local adapter of neural network struct
     struct NeuralNet adapter_nn;
     
-    // Mappiamo i dati: Pesi globali + Buffer privati del worker
     adapter_nn.n_layers = ws->shared_nn->n_layers;
     adapter_nn.n_neurons_per_layer = ws->shared_nn->n_neurons_per_layer;
     adapter_nn.w = ws->shared_nn->w;
@@ -119,7 +115,7 @@ void __wrap_forward_propagation(struct NeuralNet* nn_or_ws, char* activation_fun
     adapter_nn.out = ws->out;
     adapter_nn.targets = ws->targets;
 
-    // Eseguiamo la funzione reale
+    // execute real forward propagation
     __real_forward_propagation(&adapter_nn, activation_fun, loss);
 }
 

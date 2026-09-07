@@ -22,15 +22,15 @@ int main(int argc, char *argv[]) {
 
     // Setup parameters
     double learning_rate = 1e-4;
-    double init_lr = 1e-3;
+    double init_lr = 1e-4;
     char* activation_fun = "relu";
     char* loss = "ce";
     char* opt = "adam";
     int num_samples_to_train = 10000;
     #ifdef NUMA_API_ENABLED
-    int batch_size = 256;
+    int batch_size = 1;
     #endif
-    int epochs = 10;
+    int epochs = 5;
 
     // Override via CLI if provided
     if (argc > 1) learning_rate = atof(argv[1]);
@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
     if (argc > 8) epochs = atoi(argv[8]);
 
     #ifdef NUMA_API_ENABLED
-    int n_processes = 2;
+    int n_processes = 1;
     // computation of sizes for allocation
     size_t raw_size = sum_all_mmap_allocations(n_layers, n_neurons_per_layer);
     size_t raw_shared_size = calculate_shared_model_size(n_layers, n_neurons_per_layer);
@@ -120,7 +120,7 @@ int main(int argc, char *argv[]) {
         learning_rate = init_lr * exp(-0.1 * (itr+1));
     }
 
-    // 8. Cleanup
+    // Cleanup
     fclose(file);
     #ifdef NUMA_API_ENABLED
     for (int i = 0; i < num_numa_nodes; i++) {
