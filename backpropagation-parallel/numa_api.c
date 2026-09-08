@@ -35,15 +35,20 @@ static inline int pes_syscall(unsigned long vaddr, int index_a, int index_b) {
     return (int)syscall(PES, vaddr, index_a, index_b);
 }
 
-#define UPDATE_REPLICAS_GLOBAL(local_addr, delta_val, slab_size, num_nodes) do {    \
-    uintptr_t _l_addr = (uintptr_t)(local_addr);                                   \
-    uintptr_t _base   = (uintptr_t)global_mmap_start;                             \
-    uintptr_t _offset = _l_addr - _base;                                          \
-    for (int _n = 0; _n < (num_nodes); _n++) {                                    \
-        uintptr_t _target_addr = _base + ((uintptr_t)_n * (slab_size)) + _offset;  \
-        double* _target = (double*)_target_addr;                                  \
-        *_target -= (delta_val);                                                  \
-    }                                                                             \
+#define UPDATE_REPLICAS_GLOBAL(local_addr, delta_val, slab_size, num_nodes) do {       \
+    uintptr_t _l_addr = (uintptr_t)(local_addr);                                      \
+    uintptr_t _base   = (uintptr_t)global_mmap_start;                                \
+    size_t    _tot    = global_mmap_total_size;                                       \
+    if (_base && _l_addr >= _base && _l_addr < _base + _tot) {                        \
+        uintptr_t _offset = (_l_addr - _base) % (slab_size);                          \
+        for (int _n = 0; _n < (num_nodes); _n++) {                                    \
+            uintptr_t _target_addr = _base + ((uintptr_t)_n * (slab_size)) + _offset; \
+            double* _target = (double*)_target_addr;                                  \
+            *_target -= (delta_val);                                                  \
+        }                                                                             \
+    } else {                                                                          \
+        *((double*)_l_addr) -= (delta_val);                                           \
+    }                                                                                 \
 } while (0)
 
 size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[]) {
@@ -54,8 +59,8 @@ size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[])
     size += (size_t)n_layers * sizeof(int);
     size = ALIGN_CACHELINE(size);
 
-    size += (size_t)(n_layers - 1) * 3 * sizeof(double***); // w, mw, mw2
-    size += (size_t)(n_layers - 1) * 3 * sizeof(double*);   // b, mb, mb2
+    size += (size_t)(n_layers - 1) * 3 * sizeof(double***);
+    size += (size_t)(n_layers - 1) * 3 * sizeof(double*);
     size = ALIGN_CACHELINE(size);
 
     for (int i = 0; i < n_layers - 1; i++) {
@@ -215,10 +220,6 @@ void unmap_nn(void) {
     }
 }
 
-/**
- * FIXED: Uses the exact same loop indexing as init_nn() in neural_network.c
- * so that randn() calls match identically.
- */
 void init_nn_shared(struct NeuralNet* nn) {
     for (int k = 0; k < nn->n_layers - 1; k++) {
         int n_in  = nn->n_neurons_per_layer[k] + 1;
@@ -326,6 +327,11 @@ int activate_numa_view(int numa_node_id, void* base_ptr, size_t base_nn_size) {
 
     int pde_index_target = (numa_node_id * (int)base_nn_size) / PDE_ALIGN_SIZE;
 
+    // Node 0 already maps to physical frame 0 by default mmap
+    if (pde_index_target == 0) {
+        return 0;
+    }
+
     volatile char* touch_ptr = (char*)base_ptr;
     for (size_t offset = 0; offset < base_nn_size; offset += PAGE_SIZE) {
         touch_ptr[offset] = touch_ptr[offset];
@@ -380,42 +386,67 @@ void back_propagation_accumulate(struct NeuralNet* nn, char* activation_fun, cha
 }
 
 void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, int batch_size) {
+    double inv_batch = 1.0 / (double)batch_size;
+    int is_adam = (strcmp(opt, "adam") == 0);
+    int is_sgd  = (strcmp(opt, "sgd") == 0);
+
+    double bias_corr1 = 1.0;
+    double bias_corr2 = 1.0;
+    if (is_adam) {
+        bias_corr1 = 1.0 - pow(beta_1, itr);
+        bias_corr2 = 1.0 - pow(beta_2, itr);
+        if (bias_corr1 <= 0.0) bias_corr1 = 1e-15;
+        if (bias_corr2 <= 0.0) bias_corr2 = 1e-15;
+    }
+
     for (int k = 0; k < nn->n_layers - 1; k++) {
-        for (int j = 1; j <= nn->n_neurons_per_layer[k + 1]; j++) {
-            
-            double grad_b = nn->db[k][j] / (double)batch_size;
+        int n_in  = nn->n_neurons_per_layer[k];
+        int n_out = nn->n_neurons_per_layer[k + 1];
+
+        // 1. Biases
+        for (int j = 1; j <= n_out; j++) {
+            double grad_b  = nn->db[k][j] * inv_batch;
             double delta_b = 0.0;
 
-            if (strcmp(opt, "sgd") == 0) {
+            if (is_sgd) {
                 delta_b = lr * grad_b;
-            } else if (strcmp(opt, "adam") == 0) {
+            } else if (is_adam) {
                 nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * grad_b;
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * grad_b * grad_b;
 
-                double m_cap = nn->momentum_b[k][j] / (1.0 - pow(beta_1, itr));
-                double v_cap = nn->momentum2_b[k][j] / (1.0 - pow(beta_2, itr));
+                double m_cap = nn->momentum_b[k][j] / bias_corr1;
+                double v_cap = nn->momentum2_b[k][j] / bias_corr2;
+                if (v_cap < 0.0) v_cap = 0.0;
+
                 delta_b = (lr * m_cap) / (sqrt(v_cap) + epsilon);
             }
 
-            UPDATE_REPLICAS_GLOBAL(&(nn->b[k][j]), delta_b, global_aligned_slab_size, num_numa_nodes);
+            UPDATE_REPLICAS_GLOBAL(&(nn->b[k][j]), delta_b, 
+                                   global_aligned_slab_size, num_numa_nodes);
             nn->db[k][j] = 0.0;
+        }
 
-            for (int i = 1; i <= nn->n_neurons_per_layer[k]; i++) {
-                double grad_w = nn->dw[k][i][j] / (double)batch_size;
+        // 2. Weights
+        for (int i = 1; i <= n_in; i++) {
+            for (int j = 1; j <= n_out; j++) {
+                double grad_w  = nn->dw[k][i][j] * inv_batch;
                 double delta_w = 0.0;
 
-                if (strcmp(opt, "sgd") == 0) {
+                if (is_sgd) {
                     delta_w = lr * grad_w;
-                } else if (strcmp(opt, "adam") == 0) {
+                } else if (is_adam) {
                     nn->momentum_w[k][i][j] = beta_1 * nn->momentum_w[k][i][j] + (1.0 - beta_1) * grad_w;
                     nn->momentum2_w[k][i][j] = beta_2 * nn->momentum2_w[k][i][j] + (1.0 - beta_2) * grad_w * grad_w;
 
-                    double m_cap = nn->momentum_w[k][i][j] / (1.0 - pow(beta_1, itr));
-                    double v_cap = nn->momentum2_w[k][i][j] / (1.0 - pow(beta_2, itr));
+                    double m_cap = nn->momentum_w[k][i][j] / bias_corr1;
+                    double v_cap = nn->momentum2_w[k][i][j] / bias_corr2;
+                    if (v_cap < 0.0) v_cap = 0.0;
+
                     delta_w = (lr * m_cap) / (sqrt(v_cap) + epsilon);
                 }
 
-                UPDATE_REPLICAS_GLOBAL(&(nn->w[k][i][j]), delta_w, global_aligned_slab_size, num_numa_nodes);
+                UPDATE_REPLICAS_GLOBAL(&(nn->w[k][i][j]), delta_w, 
+                                       global_aligned_slab_size, num_numa_nodes);
                 nn->dw[k][i][j] = 0.0;
             }
         }
@@ -428,12 +459,18 @@ double* new_model_train(struct NeuralNet* nn, double** X_train, double** y_train
                         int itr, int batch_size) {
 
     int* arr = malloc(num_samples_to_train * sizeof(int));
+    if (!arr) {
+        perror("malloc failed in new_model_train");
+        exit(EXIT_FAILURE);
+    }
     for (int i = 0; i < num_samples_to_train; i++) arr[i] = i;
     shuffle(arr, num_samples_to_train);
 
     int correct = 0;
     double loss_val = 0.0;
     int last = nn->n_layers - 1;
+    int n_out_last = nn->n_neurons_per_layer[last];
+    int n_in_first = nn->n_neurons_per_layer[0];
 
     for (int i = 0; i < num_samples_to_train; i += batch_size) {
         int cur_batch = (i + batch_size > num_samples_to_train) ? 
@@ -442,23 +479,30 @@ double* new_model_train(struct NeuralNet* nn, double** X_train, double** y_train
         for (int b = 0; b < cur_batch; b++) {
             int idx = arr[i + b];
 
-            for (int j = 1; j <= nn->n_neurons_per_layer[0]; j++)
-                nn->out[0][j] = X_train[idx][j-1];
+            for (int j = 1; j <= n_in_first; j++)
+                nn->out[0][j] = X_train[idx][j - 1];
 
-            for (int j = 1; j <= nn->n_neurons_per_layer[last]; j++)
-                nn->targets[j] = y_train[idx][j-1];
+            for (int j = 1; j <= n_out_last; j++)
+                nn->targets[j] = y_train[idx][j - 1];
 
             forward_propagation(nn, activation_fun, loss);
 
-            for (int j = 1; j <= nn->n_neurons_per_layer[last]; j++) {
-                if (strcmp(loss, "mse") == 0)
+            for (int j = 1; j <= n_out_last; j++) {
+                if (strcmp(loss, "mse") == 0) {
                     loss_val += 0.5 * pow(nn->out[last][j] - nn->targets[j], 2);
-                else
-                    loss_val -= nn->targets[j] * log(nn->out[last][j]);
+                } else {
+                    // Safe Cross-Entropy: only accumulate when target > 0
+                    if (nn->targets[j] > 0.0) {
+                        double p = nn->out[last][j];
+                        if (p < 1e-15) p = 1e-15;
+                        loss_val -= nn->targets[j] * log(p);
+                    }
+                }
             }
 
-            double max_v = (double)INT_MIN; int pred = -1;
-            for (int j = 1; j <= nn->n_neurons_per_layer[last]; j++) {
+            double max_v = (double)INT_MIN;
+            int pred = -1;
+            for (int j = 1; j <= n_out_last; j++) {
                 if (nn->out[last][j] > max_v) {
                     max_v = nn->out[last][j];
                     pred = j - 1;
@@ -474,7 +518,7 @@ double* new_model_train(struct NeuralNet* nn, double** X_train, double** y_train
 
     free(arr);
 
-    static double metrics[2];
+    double* metrics = malloc(2 * sizeof(double));
     metrics[0] = loss_val / (double)num_samples_to_train;
     metrics[1] = (double)correct / (double)num_samples_to_train;
     return metrics;
@@ -541,7 +585,18 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
                          int itr, int batch_size, int n_workers) {
 
     double* shared_metrics = mmap(NULL, n_workers * 2 * sizeof(double),
-                                  PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+                                  PROT_READ | PROT_WRITE, 
+                                  MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shared_metrics == MAP_FAILED) {
+        perror("mmap shared_metrics failed");
+        exit(EXIT_FAILURE);
+    }
+
+    pid_t* pids = malloc(n_workers * sizeof(pid_t));
+    if (!pids) {
+        perror("malloc pids failed");
+        exit(EXIT_FAILURE);
+    }
 
     volatile char* ptr = (char*)base_nn;
     for (size_t i = 0; i < global_mmap_total_size; i += PAGE_SIZE) {
@@ -556,6 +611,11 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
         }
 
         if (pid == 0) {
+            free(pids);
+
+            unsigned int worker_seed = 42 + (rank * 10007) + (itr * 31);
+            srand(worker_seed);
+
             int my_node = rank % num_numa_nodes;
             pin_process_to_node(rank, my_node);
 
@@ -565,15 +625,16 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             }
 
             struct NeuralNet local_nn;
+            memset(&local_nn, 0, sizeof(struct NeuralNet));
             local_nn.magic_test_value    = base_nn->magic_test_value;
             local_nn.n_layers            = base_nn->n_layers;
             local_nn.n_neurons_per_layer = base_nn->n_neurons_per_layer;
-            local_nn.w                   = base_nn->w;            // 0x1000000000 (Shared Node k)
-            local_nn.b                   = base_nn->b;            // 0x1000000000 (Shared Node k)
-            local_nn.momentum_w          = base_nn->momentum_w;   // 0x1000000000 (Persistent Node k)
-            local_nn.momentum2_w         = base_nn->momentum2_w;  // 0x1000000000 (Persistent Node k)
-            local_nn.momentum_b          = base_nn->momentum_b;   // 0x1000000000 (Persistent Node k)
-            local_nn.momentum2_b         = base_nn->momentum2_b;  // 0x1000000000 (Persistent Node k)
+            local_nn.w                   = base_nn->w;
+            local_nn.b                   = base_nn->b;
+            local_nn.momentum_w          = base_nn->momentum_w;
+            local_nn.momentum2_w         = base_nn->momentum2_w;
+            local_nn.momentum_b          = base_nn->momentum_b;
+            local_nn.momentum2_b         = base_nn->momentum2_b;
 
             init_process_working_buffers(&local_nn);
 
@@ -591,12 +652,28 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
             shared_metrics[rank * 2]     = results[0] * (double)count;
             shared_metrics[rank * 2 + 1] = results[1] * (double)count;
 
+            free(results);
             free_process_working_buffers(&local_nn);
             exit(0);
         }
+
+        pids[rank] = pid;
     }
 
-    for (int i = 0; i < n_workers; i++) wait(NULL);
+    int child_failed = 0;
+    for (int i = 0; i < n_workers; i++) {
+        int status;
+        waitpid(pids[i], &status, 0);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            fprintf(stderr, "[MASTER] Worker PID %d failed\n", pids[i]);
+            child_failed = 1;
+        }
+    }
+    free(pids);
+
+    if (child_failed) {
+        exit(EXIT_FAILURE);
+    }
 
     double total_loss_sum = 0.0, total_correct_sum = 0.0;
     for (int i = 0; i < n_workers; i++) {

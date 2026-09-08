@@ -109,6 +109,7 @@ void free_NN(NeuralNet* nn) {
     free(nn->delta);
     free(nn->targets);
     free(nn->n_neurons_per_layer);
+    free(nn);
 }
 
 void init_nn(struct NeuralNet* nn){
@@ -172,19 +173,17 @@ void forward_propagation(struct NeuralNet* nn, char* activation_fun, char* loss)
                 }
             }
             else if(strcmp(loss, "ce") == 0){
-                double max_input_to_softmax = (double)INT_MIN;
-                for(int j=1;j<nn->n_neurons_per_layer[k]+1;j++){
-                    if(fabs(nn->in[k][j]) > max_input_to_softmax){
-                        max_input_to_softmax = fabs(nn->in[k][j]);
-                    }
+                // Numerically stable Softmax: subtract max to prevent exp() overflow
+                double max_val = nn->in[k][1];
+                for(int j=2; j<=nn->n_neurons_per_layer[k]; j++){
+                    if(nn->in[k][j] > max_val) max_val = nn->in[k][j];
                 }
                 double deno = 0.0;
-                for(int j=1;j<nn->n_neurons_per_layer[k]+1;j++){
-                    nn->in[k][j] /= max_input_to_softmax;
-                    deno += exp(nn->in[k][j]);
+                for(int j=1; j<=nn->n_neurons_per_layer[k]; j++){
+                    deno += exp(nn->in[k][j] - max_val);
                 }
-                for(int j=1;j<nn->n_neurons_per_layer[k]+1;j++){
-                    nn->out[k][j] = (double)exp(nn->in[k][j])/(double)deno;
+                for(int j=1; j<=nn->n_neurons_per_layer[k]; j++){
+                    nn->out[k][j] = exp(nn->in[k][j] - max_val) / (deno + 1e-15);
                 }
             }
         } else{
@@ -210,12 +209,17 @@ double calc_loss(struct NeuralNet* nn, char* loss){
     double loss_val = 0.0;
     int last_layer = nn->n_layers-1;
 
-    for(int i=1;i<nn->n_neurons_per_layer[last_layer]+1;i++){
+    for(int i=1; i<=nn->n_neurons_per_layer[last_layer]; i++){
         if(strcmp(loss, "mse") == 0){
             loss_val += (0.5)*(nn->out[last_layer][i] - nn->targets[i]) * (nn->out[last_layer][i] - nn->targets[i]);
         }
         else if(strcmp(loss, "ce") == 0){
-            loss_val -= nn->targets[i]*(log(nn->out[last_layer][i]));
+            // Guard: only accumulate loss where target > 0 to eliminate 0 * -inf = NaN
+            if (nn->targets[i] > 0.0) {
+                double p = nn->out[last_layer][i];
+                if (p < 1e-15) p = 1e-15;
+                loss_val -= nn->targets[i] * log(p);
+            }
         }
     }
     return loss_val;
@@ -263,6 +267,7 @@ void back_propagation(struct NeuralNet* nn, char* activation_fun, double learnin
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0-beta_2) * db * db;
                 double m_cap = (double)nn->momentum_b[k][j]/(double)(1.0 - pow(beta_1, itr));
                 double v_cap = (double)nn->momentum2_b[k][j]/(double)(1.0 - pow(beta_2, itr));
+                if (v_cap < 0.0) v_cap = 0.0;
                 nn->b[k][j] -= (learning_rate * m_cap)/(sqrt(v_cap) + epsilon);
             }
         }
@@ -279,6 +284,7 @@ void back_propagation(struct NeuralNet* nn, char* activation_fun, double learnin
                     nn->momentum2_w[k][i][j] = beta_2 * nn->momentum2_w[k][i][j] + (1.0-beta_2) * dw * dw;
                     double m_cap = (double)nn->momentum_w[k][i][j]/(double)(1.0 - pow(beta_1, itr));
                     double v_cap = (double)nn->momentum2_w[k][i][j]/(double)(1.0 - pow(beta_2, itr));
+                    if (v_cap < 0.0) v_cap = 0.0;
                     nn->w[k][i][j] -= (learning_rate * m_cap)/(sqrt(v_cap) + epsilon);
                 }
             }
@@ -317,10 +323,10 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
         for(int j=1;j<nn->n_neurons_per_layer[last_layer]+1;j++){
             if(nn->out[last_layer][j] > max_val){
                 max_val = nn->out[last_layer][j];
-                idx = j-1;
+                pred = j-1;
             }
         }
-        if(idx == (int)y_train_temp[arr[i]]){
+        if(pred == (int)y_train_temp[idx]){
             correct++;
         }
     }
@@ -338,33 +344,29 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
 double* model_test(struct NeuralNet* nn, double** X_test, double** y_test, double* y_test_temp, char* activation_fun, char* loss){
     int correct = 0;
     double loss_val = 0.0;
-    printf("DEBUG ENTRY: nn base=%p, target out field addr=%p\n", 
-           (void*)nn, (void*)&nn->out);
+    int end = nn->n_neurons_per_layer[0];
+    int last_layer = nn->n_layers - 1;
+
     for(int i=0;i<N_TEST_SAMPLES;i++){
-        int idx = -1;
         double max_val = (double)INT_MIN;
-        int end = nn->n_neurons_per_layer[0];
-        for(int j=1;j<end+1;j++){
+        int pred = -1;
+
+        for(int j=1;j<=end;j++){
             nn->out[0][j] = X_test[i][j-1];
         }
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
+        for(int j=1;j<=nn->n_neurons_per_layer[last_layer];j++){
             nn->targets[j] = y_test[i][j-1];
         }
         forward_propagation(nn, activation_fun, loss);
         loss_val += calc_loss(nn, loss);
-        if (i == 0) {
-            printf("[DEBUG-TEST-FP] First Sample Output: ");
-            for(int j=1; j<=10; j++) printf("%.3f ", nn->out[nn->n_layers-1][j]);
-            printf("\n");
-        }
             
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
-            if(nn->out[nn->n_layers-1][j] > max_val){
-                max_val =nn->out[nn->n_layers-1][j];
-                idx = j-1;
+        for(int j=1;j<=nn->n_neurons_per_layer[last_layer];j++){
+            if(nn->out[last_layer][j] > max_val){
+                max_val = nn->out[last_layer][j];
+                pred = j-1;
             }
         }
-        if(idx == (int)y_test_temp[i]){
+        if(pred == (int)y_test_temp[i]){
             correct++;
         }
     }
