@@ -53,8 +53,14 @@ double* __wrap_model_train(struct NeuralNet* nn, double** X, double** y, double*
     printf("[NUMA-WRAP] Intercepted model_train -> Launching parallel_training "
            "(Workers: %d, Batch Size: %d, Samples: %d, Epoch: %d)\n", 
            nproc, batch_size, samples, ep);
-
+    #ifdef SYNC_LOCK
+    // Synchronous Mini-Batch Training (Lock-Based Reduction)
+    return parallel_training_sync_lock(base_nn, X_train, y_train, y_train_temp, 
+                                      activation_fun, loss, opt, learning_rate, 
+                                      total_samples, itr, batch_size, n_workers);
+    #else
     return parallel_training(nn, X, y, y_t, act, loss, opt, lr, samples, ep, batch_size, nproc);
+    #endif
 }
 
 void __wrap_forward_propagation(struct NeuralNet* nn, char* activation_fun, char* loss) {

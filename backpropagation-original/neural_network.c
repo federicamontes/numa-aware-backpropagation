@@ -290,13 +290,13 @@ double calc_loss(struct NeuralNet* nn, char* loss){
  * */
 void back_propagation(struct NeuralNet* nn, char* activation_fun, double learning_rate, char* loss, char* opt, int itr){
 
-    int last_layer = nn->n_layers-1;
+    int last_layer = nn->n_layers - 1;
 
     /* Calculate the error in the output layer */
-    for(int i=1;i<nn->n_neurons_per_layer[last_layer]+1;i++){
+    for(int i = 1; i <= nn->n_neurons_per_layer[last_layer]; i++){
         if(strcmp(loss, "mse") == 0){
             double grad = sigmoid_d(nn->out[last_layer][i]);
-            nn->delta[last_layer][i] = grad*(nn->out[last_layer][i] - nn->targets[i]);
+            nn->delta[last_layer][i] = grad * (nn->out[last_layer][i] - nn->targets[i]);
         }
         else if(strcmp(loss, "ce") == 0){
             nn->delta[last_layer][i] = nn->out[last_layer][i] - nn->targets[i];
@@ -304,92 +304,56 @@ void back_propagation(struct NeuralNet* nn, char* activation_fun, double learnin
     }
 
     /* Backpropagate the error from the last layer to the first layer */
-    for(int k=nn->n_layers-2;k>0;k--){
-        
-        for(int i=1;i<nn->n_neurons_per_layer[k]+1;i++){
+    for(int k = nn->n_layers - 2; k > 0; k--){
+        for(int i = 1; i <= nn->n_neurons_per_layer[k]; i++){
 
-            // weighted sum of deltas of next layer
+            // Strictly weighted sum of deltas (bias loop removed)
             double sum = 0.0;
-            for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){
-                sum += nn->b[k][j] * nn->delta[k+1][j];
-            }
-            for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){
-                sum += nn->w[k][i][j] * nn->delta[k+1][j];
+            for(int j = 1; j <= nn->n_neurons_per_layer[k + 1]; j++){
+                sum += nn->w[k][i][j] * nn->delta[k + 1][j];
             }
 
-            // compute gradient of activation function
+            // Compute gradient of activation function
             double grad;
-            if(strcmp(activation_fun, "sigmoid") == 0){
-                grad = sigmoid_d(nn->out[k][i]);
-            }
-            else if(strcmp(activation_fun, "tanh") == 0){
-                grad = tanh_d(nn->out[k][i]);
-            }
-            else if(strcmp(activation_fun, "relu") == 0){
-                grad = relu_d(nn->out[k][i]);
-            }
-            else{
-                grad = sigmoid_d(nn->out[k][i]);
-            }
-            // delta of hidden layer
+            if(strcmp(activation_fun, "sigmoid") == 0)      grad = sigmoid_d(nn->out[k][i]);
+            else if(strcmp(activation_fun, "tanh") == 0) grad = tanh_d(nn->out[k][i]);
+            else if(strcmp(activation_fun, "relu") == 0) grad = relu_d(nn->out[k][i]);
+            else                                          grad = sigmoid_d(nn->out[k][i]);
+
             nn->delta[k][i] = grad * sum;
         }
     }
 
-    /* Update the weights according to the given optimization technique */
-    //for each layer to update
-    for(int k=0;k<nn->n_layers-1;k++){
+    /* Update weights and biases */
+    for(int k = 0; k < nn->n_layers - 1; k++){
+        for(int j = 1; j <= nn->n_neurons_per_layer[k + 1]; j++){
 
-        for(int i=1;i<nn->n_neurons_per_layer[k]+1;i++){
-            for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){
-
-                // dw is partial gradient of weight w
-                double dw = nn->delta[k+1][j] * nn->out[k][i];
-
-                if(strcmp(opt, "sgd") == 0){ //stochastic gradient descent
-                    nn->w[k][i][j] -= learning_rate * dw;
-                }
-                else if(strcmp(opt, "momentum") == 0){
-                    nn->momentum_w[k][i][j] = beta * nn->momentum_w[k][i][j] + (1.0-beta) * dw * learning_rate;
-                    nn->w[k][i][j] -= nn->momentum_w[k][i][j];
-                }
-                else if(strcmp(opt, "rmsprop") == 0){
-                    nn->momentum_w[k][i][j] = beta * nn->momentum_w[k][i][j] + (1.0-beta) * dw * dw;
-                    nn->w[k][i][j] -= (learning_rate * dw)/(sqrt(nn->momentum_w[k][i][j]) + 1e-6);
-                }
-                else if(strcmp(opt, "adam") == 0){
-                    nn->momentum_w[k][i][j] = beta_1 * nn->momentum_w[k][i][j] + (1.0-beta_1) * dw;
-                    nn->momentum2_w[k][i][j] = beta_2 * nn->momentum2_w[k][i][j] + (1.0-beta_2) * dw * dw;
-                    double m_cap = (double)nn->momentum_w[k][i][j]/(double)(1.0 - pow(beta_1, itr));
-                    double v_cap = (double)nn->momentum2_w[k][i][j]/(double)(1.0 - pow(beta_2, itr));
-                    nn->w[k][i][j] -= (learning_rate * m_cap)/(sqrt(v_cap) + epsilon);
-                }
-            }
-        }
-
-        /* Update the bias weights */
-        for(int j=1;j<nn->n_neurons_per_layer[k+1]+1;j++){
-
-            // db is partial gradient for bias b
-            double db = nn->delta[k+1][j] * 1.0;
-
+            // Update Bias
+            double db = nn->delta[k + 1][j];
             if(strcmp(opt, "sgd") == 0){
                 nn->b[k][j] -= learning_rate * db;
             }
-            else if(strcmp(opt, "momentum") == 0){
-                nn->momentum_b[k][j] = beta * nn->momentum_b[k][j] + (1.0-beta) * db * learning_rate;
-                nn->b[k][j] -= nn->momentum_b[k][j];
-            }
-            else if(strcmp(opt, "rmsprop") == 0){
-                nn->momentum_b[k][j] = beta * nn->momentum_b[k][j] + (1.0-beta) * db * db;
-                nn->b[k][j] -= (learning_rate * db)/(sqrt(nn->momentum_b[k][j]) + 1e-6);
-            }
             else if(strcmp(opt, "adam") == 0){
-                nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0-beta_1) * db;
-                nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0-beta_2) * db * db;
-                double m_cap = (double)nn->momentum_b[k][j]/(double)(1.0 - pow(beta_1, itr));
-                double v_cap = (double)nn->momentum2_b[k][j]/(double)(1.0 - pow(beta_2, itr));
-                nn->b[k][j] -= (learning_rate * m_cap)/(sqrt(v_cap) + epsilon);
+                nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * db;
+                nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * db * db;
+                double m_cap = nn->momentum_b[k][j] / (1.0 - pow(beta_1, itr));
+                double v_cap = nn->momentum2_b[k][j] / (1.0 - pow(beta_2, itr));
+                nn->b[k][j] -= (learning_rate * m_cap) / (sqrt(v_cap) + epsilon);
+            }
+
+            // Update Weights
+            for(int i = 1; i <= nn->n_neurons_per_layer[k]; i++){
+                double dw = nn->delta[k + 1][j] * nn->out[k][i];
+                if(strcmp(opt, "sgd") == 0){
+                    nn->w[k][i][j] -= learning_rate * dw;
+                }
+                else if(strcmp(opt, "adam") == 0){
+                    nn->momentum_w[k][i][j] = beta_1 * nn->momentum_w[k][i][j] + (1.0 - beta_1) * dw;
+                    nn->momentum2_w[k][i][j] = beta_2 * nn->momentum2_w[k][i][j] + (1.0 - beta_2) * dw * dw;
+                    double m_cap = nn->momentum_w[k][i][j] / (1.0 - pow(beta_1, itr));
+                    double v_cap = nn->momentum2_w[k][i][j] / (1.0 - pow(beta_2, itr));
+                    nn->w[k][i][j] -= (learning_rate * m_cap) / (sqrt(v_cap) + epsilon);
+                }
             }
         }
     }
@@ -414,48 +378,34 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
                     char* activation_fun, char* loss, char* opt, double learning_rate,
                     int num_samples_to_train, int itr){
 
-    // Create an array for generating random permutation of training sample indices
-    int arr[N_SAMPLES]; //all samples
-    for(int i=0;i<N_SAMPLES;i++){
-        arr[i] = i;
-    }
-    shuffle(arr, N_SAMPLES); //shuffle array
+    int* arr = malloc(num_samples_to_train * sizeof(int));
+    for(int i = 0; i < num_samples_to_train; i++) arr[i] = i;
+    shuffle(arr, num_samples_to_train);
 
-    int shuffler[num_samples_to_train]; //only the samples used in this epoch
-    for(int i=0;i<num_samples_to_train;i++){
-        shuffler[i] = arr[i];
-    }
-
-    // Start training the model for 1 epoch and simultaneously calculate the training error and accuracy
     int correct = 0;
     double loss_val = 0.0;
+    int last_layer = nn->n_layers - 1;
 
-    for(int i=0;i<num_samples_to_train;i++){ //for each sample
+    for(int i = 0; i < num_samples_to_train; i++){
+        int idx = arr[i];
 
-        //shuffle(shuffler, num_samples_to_train); //it doesn't seem to have any impact since arr[i] has already been shuffled before
-
-        int idx = -1; //predicted class init
-        double max_val = (double)INT_MIN;
-
-        // arr[i] is a random index
-        for(int j=1;j<nn->n_neurons_per_layer[0]+1;j++){
-            // out[0] is the input layer, load the training set
-            nn->out[0][j] = X_train[arr[i]][j-1];
+        for(int j = 1; j <= nn->n_neurons_per_layer[0]; j++){
+            nn->out[0][j] = X_train[idx][j-1];
         }
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
-            // targets is the desired output, load the labels
-            nn->targets[j] = y_train[arr[i]][j-1];
+        for(int j = 1; j <= nn->n_neurons_per_layer[last_layer]; j++){
+            nn->targets[j] = y_train[idx][j-1];
         }
 
         forward_propagation(nn, activation_fun, loss);
         back_propagation(nn, activation_fun, learning_rate, loss, opt, itr);
-        loss_val += calc_loss(nn, loss); // compute and accumulate loss
+        loss_val += calc_loss(nn, loss);
             
-        // compute max and class predicted
-        for(int j=1;j<nn->n_neurons_per_layer[nn->n_layers-1]+1;j++){
-            if(nn->out[nn->n_layers-1][j] > max_val){
-                max_val =nn->out[nn->n_layers-1][j];
-                idx = j-1;
+        double max_val = -INFINITY;
+        int pred = -1;
+        for(int j = 1; j <= nn->n_neurons_per_layer[last_layer]; j++){
+            if(nn->out[last_layer][j] > max_val){
+                max_val = nn->out[last_layer][j];
+                idx = j - 1;
             }
         }
         if(idx == (int)y_train_temp[arr[i]]){
@@ -463,9 +413,10 @@ double* model_train(struct NeuralNet* nn, double** X_train, double** y_train, do
         }
     }
 
-    //avg loss
-    loss_val /=(double)num_samples_to_train;
-    double accuracy = (double)correct/(double)num_samples_to_train;
+    free(arr);
+
+    loss_val /= (double)num_samples_to_train;
+    double accuracy = (double)correct / (double)num_samples_to_train;
     static double metrics[2];
     metrics[0] = loss_val;
     metrics[1] = accuracy;

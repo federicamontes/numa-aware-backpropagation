@@ -1,40 +1,45 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O3 -g -std=c99 -I.
+CFLAGS = -Wall -Wextra -O3 -g -std=c99 -D_GNU_SOURCE -I.
 LDFLAGS = -lm 
 
 # Kernel modules directories
 USCTM_DIR = ../pte-entry-switcher/Linux-sys_call_table-discoverer
 PES_DIR   = ../pte-entry-switcher/PTE-entry-switcher
 
-# Test executable name
-TEST_TARGET = test_pes
+# Executable binary names
+STD_TARGET         = nn_app_std
+ASYNC_TARGET       = nn_app_numa_async
+LOCK_TARGET        = nn_app_numa_lock
+TEST_TARGET        = test_pes
+CORRECTNESS_TARGET = test_correctness
 
-# Default: NUMA disabled
+# Linker wrap flags for NUMA memory remapping
+WRAP_FLAGS = -Wl,--wrap=newNet \
+             -Wl,--wrap=model_train \
+             -Wl,--wrap=init_nn \
+             -Wl,--wrap=free_NN \
+             -Wl,--wrap=model_test \
+             -Wl,--wrap=forward_propagation
+
+NUMA_LDFLAGS = $(LDFLAGS) -lnuma $(WRAP_FLAGS) -pthread
+
+# Build configuration flags
 NUMA ?= 0
-
-# Base objects for the main application
-OBJ = main.o neural_network.o
+SYNC ?= ASYNC
 
 ifeq ($(NUMA), 1)
-    # Target name for NUMA mode
-    TARGET = nn_app_numa
-    OBJ += numa_api.o wrappers.o
-    NUMA_FLAGS = -DNUMA_API_ENABLED
-    LDFLAGS += -lnuma \
-               -Wl,--wrap=newNet \
-               -Wl,--wrap=model_train \
-               -Wl,--wrap=init_nn \
-               -Wl,--wrap=free_NN \
-               -Wl,--wrap=model_test \
-               -Wl,--wrap=forward_propagation
-    
-    ALL_TARGETS = $(TARGET) $(TEST_TARGET)
-    MSG = NUMA_MODE_ENABLED
+    ifeq ($(SYNC), LOCK)
+        TARGET = $(LOCK_TARGET)
+        MSG = NUMA MODE ENABLED (SYNCHRONOUS LOCK-BASED REDUCTION)
+    else
+        TARGET = $(ASYNC_TARGET)
+        MSG = NUMA MODE ENABLED (ASYNCHRONOUS HOGWILD)
+    endif
+    ALL_TARGETS = $(TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET)
 else
-    # Target name for Standard mode
-    TARGET = nn_app_std
+    TARGET = $(STD_TARGET)
+    MSG = STANDARD SEQUENTIAL MODE
     ALL_TARGETS = $(TARGET)
-    MSG = STANDARD_MODE_ENABLED
 endif
 
 # --- MAIN TARGETS ---
@@ -42,31 +47,61 @@ endif
 all: $(ALL_TARGETS)
 	@echo "--------------------------------------------------"
 	@echo "Build completed: $(MSG)"
-	@echo "Binary name: $(TARGET)"
+	@echo "Binary created:  $(TARGET)"
 	@echo "--------------------------------------------------"
 
-$(TARGET): $(OBJ)
-	$(CC) $(CFLAGS) $(OBJ) -o $(TARGET) $(LDFLAGS)
+# --- SHORTHAND TARGETS ---
+std: $(STD_TARGET)
+async: $(ASYNC_TARGET)
+lock: $(LOCK_TARGET)
+all-apps: $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET)
 
-$(TEST_TARGET): test_numa_nn.o numa_api.o neural_network.o wrappers.o
-	$(CC) $(CFLAGS) test_numa_nn.o numa_api.o neural_network.o wrappers.o -o $(TEST_TARGET) $(LDFLAGS) -lnuma
+# --- LINKING RULES ---
+
+# 1. Standard Sequential Baseline
+$(STD_TARGET): main_std.o neural_network.o
+	$(CC) $(CFLAGS) main_std.o neural_network.o -o $(STD_TARGET) $(LDFLAGS)
+
+# 2. NUMA Asynchronous (Hogwild!)
+$(ASYNC_TARGET): main_numa.o neural_network.o numa_api_async.o wrappers.o
+	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_async.o wrappers.o -o $(ASYNC_TARGET) $(NUMA_LDFLAGS)
+
+# 3. NUMA Synchronous (Lock-Based Reduction)
+$(LOCK_TARGET): main_numa.o neural_network.o numa_api_lock.o wrappers.o
+	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_lock.o wrappers.o -o $(LOCK_TARGET) $(NUMA_LDFLAGS)
+
+# 4. Test Suites (FIXED: Uses NUMA_LDFLAGS to resolve __real_* symbols)
+$(TEST_TARGET): test_numa_nn.o numa_api_async.o neural_network.o wrappers.o
+	$(CC) $(CFLAGS) test_numa_nn.o numa_api_async.o neural_network.o wrappers.o -o $(TEST_TARGET) $(NUMA_LDFLAGS)
+
+$(CORRECTNESS_TARGET): test_correctness.o numa_api_async.o neural_network.o wrappers.o
+	$(CC) $(CFLAGS) test_correctness.o numa_api_async.o neural_network.o wrappers.o -o $(CORRECTNESS_TARGET) $(NUMA_LDFLAGS)
 
 # --- COMPILATION RULES ---
 
 neural_network.o: neural_network.c
 	$(CC) $(CFLAGS) -c neural_network.c -o neural_network.o
 
-numa_api.o: numa_api.c
-	$(CC) $(CFLAGS) $(NUMA_FLAGS) -c numa_api.c -o numa_api.o
+main_std.o: main.c
+	$(CC) $(CFLAGS) -c main.c -o main_std.o
+
+main_numa.o: main.c
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c main.c -o main_numa.o
 
 wrappers.o: wrappers.c
-	$(CC) $(CFLAGS) $(NUMA_FLAGS) -c wrappers.c -o wrappers.o
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c wrappers.c -o wrappers.o
 
-main.o: main.c
-	$(CC) $(CFLAGS) $(NUMA_FLAGS) -c main.c -o main.o
+numa_api_async.o: numa_api.c ipc_lock.h
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DSYNC_ASYNC -c numa_api.c -o numa_api_async.o
+
+numa_api_lock.o: numa_api.c ipc_lock.h
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DSYNC_LOCK -c numa_api.c -o numa_api_lock.o
 
 test_numa_nn.o: test_numa_nn.c
-	$(CC) $(CFLAGS) $(NUMA_FLAGS) -c test_numa_nn.c -o test_numa_nn.o
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c test_numa_nn.c -o test_numa_nn.o
+
+test_correctness.o: test_correctness.c
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c test_correctness.c -o test_correctness.o
 
 # --- KERNEL MODULES MANAGEMENT ---
 
@@ -90,9 +125,8 @@ modules-unload:
 	fi
 
 clean:
-	@echo "--- Cleaning up project binaries and objects ---"
-	rm -f nn_app_std nn_app_numa $(TEST_TARGET) *.o
+	rm -f $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET) *.o metrics_training.txt
 	-@if [ -d $(USCTM_DIR) ]; then cd $(USCTM_DIR) && $(MAKE) clean; fi
 	-@if [ -d $(PES_DIR) ]; then cd $(PES_DIR) && $(MAKE) clean; fi
 
-.PHONY: all modules-load modules-unload clean
+.PHONY: all std async lock all-apps modules-load modules-unload clean

@@ -22,7 +22,7 @@ typedef struct {
 
 int main(int argc, char* argv[]) {
     int nodes_to_test = 2;
-    int workers_to_test = 4; // E.g., 4 workers across 2 NUMA nodes
+    int workers_to_test = 4;
 
     if (argc > 1) nodes_to_test = atoi(argv[1]);
     if (argc > 2) workers_to_test = atoi(argv[2]);
@@ -40,7 +40,6 @@ int main(int argc, char* argv[]) {
     int n_layers = 3;
     int neurons[] = {784, 64, 10};
 
-    // Allocates exactly 'num_numa_nodes' physical 2MB slabs
     NeuralNet* base_nn = setup_numa_model(n_layers, neurons);
     if (!base_nn) {
         fprintf(stderr, "[ERROR] setup_numa_model failed!\n");
@@ -49,7 +48,8 @@ int main(int argc, char* argv[]) {
 
     size_t slab_size = global_aligned_slab_size;
     printf("[PARENT] Virtual Base:      %p\n", (void*)base_nn);
-    printf("[PARENT] Total Shared Mmap: %zu bytes (%.2f MB)\n", global_mmap_total_size, (double)global_mmap_total_size / (1024.0 * 1024.0));
+    printf("[PARENT] Total Shared Mmap: %zu bytes (%.2f MB)\n", 
+           global_mmap_total_size, (double)global_mmap_total_size / (1024.0 * 1024.0));
     printf("--------------------------------------------------------------------\n");
 
     WorkerReport* reports = mmap(NULL, workers_to_test * sizeof(WorkerReport),
@@ -66,10 +66,13 @@ int main(int argc, char* argv[]) {
             int my_node = rank % num_numa_nodes;
             pin_process_to_node(rank, my_node);
 
+            reports[rank].rank           = rank;
+            reports[rank].target_node    = my_node;
+            reports[rank].switch_success = false;
+
             // 1. Activate shared NUMA view for this socket
             if (activate_numa_view(my_node, base_nn, slab_size) < 0) {
                 fprintf(stderr, "[WORKER %d] FAILED to execute PDE switch!\n", rank);
-                reports[rank].switch_success = false;
                 exit(1);
             }
 
@@ -78,24 +81,20 @@ int main(int argc, char* argv[]) {
             local_nn.magic_test_value    = base_nn->magic_test_value;
             local_nn.n_layers            = base_nn->n_layers;
             local_nn.n_neurons_per_layer = base_nn->n_neurons_per_layer;
-            local_nn.w                   = base_nn->w; // 0x1000000000 (Shared Socket k frame)
-            local_nn.b                   = base_nn->b; // 0x1000000000 (Shared Socket k frame)
+            local_nn.w                   = base_nn->w; 
+            local_nn.b                   = base_nn->b; 
 
-            // 3. Initialize process-private working buffers (First-Touch on Socket my_node)
+            // 3. Initialize process-private working buffers
             init_process_working_buffers(&local_nn);
 
-            // Canary is shared by all processes on 'my_node'
             double post_canary = local_nn.magic_test_value;
             double expected_canary = 100.0 * (double)(my_node + 1);
 
-            // Process writes to its private activations buffer
             double test_val = 1000.0 + (double)rank * 50.0 + (double)my_node;
             local_nn.out[0][1] = test_val;
 
             usleep(25000);
 
-            reports[rank].rank               = rank;
-            reports[rank].target_node        = my_node;
             reports[rank].canary_read        = post_canary;
             reports[rank].expected_canary    = expected_canary;
             reports[rank].local_write_val    = local_nn.out[0][1];
