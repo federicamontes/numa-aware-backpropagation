@@ -20,32 +20,57 @@ To build and run this project, you need:
 
 * Building the Project
 
+# Verify dataset files exist
+ls -lh mnist_train.csv mnist_test.csv
+# If zipped:
+# unzip mnist_t.zip
+
+- Load the LKM:
+make modules-load (sudo already called inside)
+
+To verify the modules have been loaded: lsmod | grep -E "the_pte_entry_switcher|the_usctm"
+
+- Unload the LKM:
+make modules-unload
+
+
+
 Use the provided Makefile to compile the project
 
-	Clean generated files:
-	make clean
-	# Removes the executable and object files (*.o)
+The Makefile supports compiling different binaries depending on the NUMA flag:
+Build Flag / Target           | Generated Binary       		| Description
+-------------------------------+------------------------+--------------------------------------------------------------
+ make NUMA=0                   | nn_app_std             	| Standard CPU baseline (heap malloc, sequential, no wrappers)
+ make NUMA=1                   | nn_app_numa_async, test_pes    | NUMA engine with 2MB mmap slabs, linker wrappers & PMD test
+ make NUMA=1 test_correctness  | test_correctness       	| Standalone bit-for-bit mathematical parity test
+ make clean                    | (removes *.o, binaries)	| Cleans all user-space object files and binaries
 
-## Compile Sequential Mode
-	make NUMA=0 or simply make
-	# Creates the executable: nn_app_std
+# Build the Standard Baseline (nn_app_std)
+make clean
+make NUMA=0
 
-	Unzip mnist dataset → it contains training and testing set
+# Build the NUMA Engine (nn_app_numa_async and test_pes)
+(make clean)
+make NUMA=1
 
-## Compile NUMA-aware Mode
-	make NUMA=1
-	# Creates the executable: nn_app_numa
+* Compiles with -DNUMA_API_ENABLED, links numa_api.o and wrappers.o, and applies linker hooks
+(-Wl,--wrap=newNet, --wrap=model_train, --wrap=init_nn, --wrap=free_NN, --wrap=model_test, --wrap=forward_propagation).
 
-	Load Modules:
-	make modules-load
 
-	Unload Modules:
-	make modules-unload
+## Parameters of executables
+Application Binaries: nn_app_std and nn_app_numa_async:
+./<binary> [lr] [init_lr] [act] [loss] [opt] [samples] [batch_size] [epochs] [workers (numa only)]
 
-You can then run the executable:
-#	./nn_app_std if NUMA=0
-#   ./nn_app_numa if NUMA=1
-
+Positional Arg	Parameter			Example Value	Description
+argv[1]		Learning Rate (lr)		0.0001		Initial step size for gradient updates
+argv[2]		Decay Base LR (init_lr)		0.0001		Base LR for exponential decay
+argv[3]		Activation Function (act)	relu		Hidden layer activation (relu, tanh, or sigmoid)
+argv[4]		Loss Function (loss)		ce		Loss criterion (ce for Cross-Entropy, mse for Mean Squared Error)
+argv[5]		Optimizer (opt)			adam		Optimization algorithm (adam or sgd)
+argv[6]		Training Samples (samples)	10000		Number of training samples per epoch (up to 60,000)
+argv[7]		Mini-Batch Size (batch_size)	1 or 32		Gradient accumulation window
+argv[8]		Epochs (epochs)			5		Total training iterations over the dataset
+argv[9]		Workers (workers)		1, 2, 4		Number of parallel worker processes (NUMA mode only)
 
 It does create an output file called metrics_63_32.txt which format is
 #	train_loss,train_acc,test_loss,test_acc
