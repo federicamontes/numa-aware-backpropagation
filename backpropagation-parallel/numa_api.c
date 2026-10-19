@@ -38,6 +38,50 @@ static inline int pes_syscall(unsigned long vaddr, int index_a, int index_b) {
     return (int)syscall(PES, vaddr, index_a, index_b);
 }
 
+#if defined(ATOMIC_UPDATE)
+/**
+ * Atomic Fetch-And-Subtract for 64-bit double precision floats.
+ * Implemented via a lock-free 64-bit CAS (Compare-And-Swap) loop.
+ *
+ * @param target Pointer to the double in shared memory.
+ * @param delta  Value to subtract (*target -= delta).
+ * @return The old value before subtraction.
+ */
+static inline double atomic_sub_double(double *target, double delta) {
+    union {
+        double   d;
+        uint64_t u;
+    } old_val, new_val;
+
+    // Load current value as 64-bit integer
+    old_val.u = __atomic_load_n((uint64_t*)target, __ATOMIC_RELAXED);
+
+    do {
+        // Compute subtraction using standard floating-point arithmetic
+        new_val.d = old_val.d - delta;
+
+        // Atomically replace *target if its memory still matches old_val.u.
+        // If another core modified *target in the meantime, CAS fails,
+        // reloads the new value into old_val.u, and retries the loop.
+    } while (!__atomic_compare_exchange_n((uint64_t*)target, 
+                                          &old_val.u, 
+                                          new_val.u, 
+                                          true,                // Weak CAS for loop efficiency
+                                          __ATOMIC_RELEASE,   // Publish updated weight
+                                          __ATOMIC_RELAXED)); // Relaxed on reload failure
+
+    return old_val.d;
+}
+#endif
+
+#if defined(ATOMIC_UPDATE)
+    // Mode 3: Atomic Lock-Free FAD (Orders updates per float without global locks)
+    #define APPLY_REPLICA_DELTA(target_ptr, delta) atomic_sub_double((target_ptr), (delta))
+#else
+    // Mode 1: Default Asynchronous (Hogwild! style, direct write)
+    #define APPLY_REPLICA_DELTA(target_ptr, delta) (*(target_ptr) -= (delta))
+#endif
+
 #define UPDATE_REPLICAS_GLOBAL(local_addr, delta_val, slab_size, num_nodes) do {       \
     uintptr_t _l_addr = (uintptr_t)(local_addr);                                      \
     uintptr_t _base   = (uintptr_t)global_mmap_start;                                \
@@ -47,13 +91,12 @@ static inline int pes_syscall(unsigned long vaddr, int index_a, int index_b) {
         for (int _n = 0; _n < (num_nodes); _n++) {                                    \
             uintptr_t _target_addr = _base + ((uintptr_t)_n * (slab_size)) + _offset; \
             double* _target = (double*)_target_addr;                                  \
-            *_target -= (delta_val);                                                  \
+            APPLY_REPLICA_DELTA(_target, delta_val);                                  \
         }                                                                             \
     } else {                                                                          \
-        *((double*)_l_addr) -= (delta_val);                                           \
+        APPLY_REPLICA_DELTA((double*)_l_addr, delta_val);                             \
     }                                                                                 \
 } while (0)
-
 
 // ============================================================================
 // init_node_ipc_context
@@ -644,9 +687,11 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
             if (is_sgd) {
                 delta_b = lr * grad_b;
             } else if (is_adam) {
+                // todo: non si possono fare atomic, capire l'impatto della perdita di update qui
+                // bisogna capire se ha senso tenere momentum intra-nodo oppure replicarla sui vari nodi numa
                 nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * grad_b;
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * grad_b * grad_b;
-
+                // memory fence qui
                 double m_cap = nn->momentum_b[k][j] / bias_corr1;
                 double v_cap = nn->momentum2_b[k][j] / bias_corr2;
                 if (v_cap < 0.0) v_cap = 0.0;

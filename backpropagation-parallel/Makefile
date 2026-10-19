@@ -10,6 +10,7 @@ PES_DIR   = ../pte-entry-switcher/PTE-entry-switcher
 STD_TARGET         = nn_app_std
 ASYNC_TARGET       = nn_app_numa_async
 LOCK_TARGET        = nn_app_numa_lock
+ATOMIC_TARGET      = nn_app_numa_atomic
 TEST_TARGET        = test_pes
 CORRECTNESS_TARGET = test_correctness
 
@@ -25,20 +26,28 @@ NUMA_LDFLAGS = $(LDFLAGS) -lnuma $(WRAP_FLAGS) -pthread
 
 # Build configuration flags
 NUMA ?= 0
-SYNC ?= ASYNC
+# Synchronization modes: ASYNC (default), ATOMIC, or LOCK
+MODE ?= ASYNC
 
 ifeq ($(NUMA), 1)
-    ifeq ($(SYNC), LOCK)
+    NUMA_FLAGS = -DNUMA_API_ENABLED
+
+    ifeq ($(MODE), ATOMIC)
+        NUMA_FLAGS += -DATOMIC_UPDATE
+        TARGET = $(ATOMIC_TARGET)
+        MSG = NUMA_MODE_ATOMIC_FAD
+    else ifeq ($(MODE), LOCK)
+        NUMA_FLAGS += -DSYNC_LOCK
         TARGET = $(LOCK_TARGET)
-        MSG = NUMA MODE ENABLED (SYNCHRONOUS LOCK-BASED REDUCTION)
+        MSG = NUMA_MODE_SYNC_LOCK
     else
         TARGET = $(ASYNC_TARGET)
-        MSG = NUMA MODE ENABLED (ASYNCHRONOUS HOGWILD)
+        MSG = NUMA_MODE_ASYNC_HOGWILD
     endif
-    ALL_TARGETS = $(TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET)
+    ALL_TARGETS = $(TARGET)
 else
     TARGET = $(STD_TARGET)
-    MSG = STANDARD SEQUENTIAL MODE
+    MSG = STANDARD_MODE_ENABLED
     ALL_TARGETS = $(TARGET)
 endif
 
@@ -54,7 +63,8 @@ all: $(ALL_TARGETS)
 std: $(STD_TARGET)
 async: $(ASYNC_TARGET)
 lock: $(LOCK_TARGET)
-all-apps: $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET)
+atomic: $(ATOMIC_TARGET)
+all-apps: $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(ATOMIC_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET)
 
 # --- LINKING RULES ---
 
@@ -70,7 +80,11 @@ $(ASYNC_TARGET): main_numa.o neural_network.o numa_api_async.o wrappers.o
 $(LOCK_TARGET): main_numa.o neural_network.o numa_api_lock.o wrappers.o
 	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_lock.o wrappers.o -o $(LOCK_TARGET) $(NUMA_LDFLAGS)
 
-# 4. Test Suites (FIXED: Uses NUMA_LDFLAGS to resolve __real_* symbols)
+# 4. NUMA Atomic (Fetch-And-Add / FAD)
+$(ATOMIC_TARGET): main_numa.o neural_network.o numa_api_atomic.o wrappers.o
+	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_atomic.o wrappers.o -o $(ATOMIC_TARGET) $(NUMA_LDFLAGS)
+
+# 5. Test Suites (FIXED: Uses NUMA_LDFLAGS to resolve __real_* symbols)
 $(TEST_TARGET): test_numa_nn.o numa_api_async.o neural_network.o wrappers.o
 	$(CC) $(CFLAGS) test_numa_nn.o numa_api_async.o neural_network.o wrappers.o -o $(TEST_TARGET) $(NUMA_LDFLAGS)
 
@@ -96,6 +110,9 @@ numa_api_async.o: numa_api.c ipc_lock.h
 
 numa_api_lock.o: numa_api.c ipc_lock.h
 	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DSYNC_LOCK -c numa_api.c -o numa_api_lock.o
+
+numa_api_atomic.o: numa_api.c ipc_lock.h
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DATOMIC_UPDATE -c numa_api.c -o numa_api_atomic.o
 
 test_numa_nn.o: test_numa_nn.c
 	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c test_numa_nn.c -o test_numa_nn.o
@@ -125,8 +142,8 @@ modules-unload:
 	fi
 
 clean:
-	rm -f $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET) *.o metrics_training.txt
+	rm -f $(STD_TARGET) $(ASYNC_TARGET) $(LOCK_TARGET) $(ATOMIC_TARGET) $(TEST_TARGET) $(CORRECTNESS_TARGET) *.o metrics_training.txt
 	-@if [ -d $(USCTM_DIR) ]; then cd $(USCTM_DIR) && $(MAKE) clean; fi
 	-@if [ -d $(PES_DIR) ]; then cd $(PES_DIR) && $(MAKE) clean; fi
 
-.PHONY: all std async lock all-apps modules-load modules-unload clean
+.PHONY: all std async lock atomic all-apps modules-load modules-unload clean
