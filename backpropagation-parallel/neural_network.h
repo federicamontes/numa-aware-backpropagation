@@ -84,6 +84,7 @@ void scale_data(double** X, char* type);
 void normalize_data(double** X_train, double** X_test);
 
 #ifdef NUMA_API_ENABLED
+void detect_numa_topology(void);
 size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[]);
 struct NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]);
 int activate_numa_view(int numa_node_id, void* base_ptr, size_t base_nn_size);

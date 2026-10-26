@@ -24,6 +24,8 @@ static bool master_test_buffers_allocated = false;
 
 struct NeuralNet* __wrap_newNet(int n_layers, int n_neurons_per_layer[]) {
     printf("[NUMA-WRAP] Redirecting newNet -> setup_numa_model\n");
+
+    detect_numa_topology();
     int batch_size = 1;
     int nproc = 1;
 
@@ -38,6 +40,7 @@ struct NeuralNet* __wrap_newNet(int n_layers, int n_neurons_per_layer[]) {
     size_t raw_slab_size = calculate_shared_slab_size(n_layers, n_neurons_per_layer);
     size_t aligned_slab_size = ALIGN_PAGE(raw_slab_size);
 
+    // Prints exact discovered hardware count automatically
     printf("==================================================\n");
     printf("        NUMA-Aware Engine Initialization          \n");
     printf("==================================================\n");

@@ -258,12 +258,33 @@ size_t calculate_shared_slab_size(int n_layers, const int n_neurons_per_layer[])
     return size;
 }
 
+// ============================================================================
+// detect_numa_topology
+// Dynamically discovers the hardware NUMA topology from the Linux kernel.
+// ============================================================================
+void detect_numa_topology(void) {
+    // Only auto-detect if not already explicitly set (e.g., by test_pes emulation)
+    if (num_numa_nodes <= 1) {
+        if (numa_available() >= 0) {
+            int detected = numa_num_configured_nodes();
+            if (detected > 1) {
+                num_numa_nodes = detected;
+            } else {
+                num_numa_nodes = 1;
+            }
+        } else {
+            num_numa_nodes = 1;
+        }
+    }
+}
+
 void bind_memory_to_numa_node(void* addr, size_t size, int node) {
     int max_node = numa_max_node();
     if (max_node < 0 || node > max_node) return;
 
     unsigned long nodemask = (1UL << node);
-    if (mbind(addr, size, MPOL_BIND, &nodemask, sizeof(unsigned long) * 8, MPOL_MF_STRICT) < 0) {
+    // MPOL_MF_MOVE ensures the kernel moves any pre-faulted pages to the target NUMA socket
+    if (mbind(addr, size, MPOL_BIND, &nodemask, sizeof(unsigned long) * 8, MPOL_MF_STRICT | MPOL_MF_MOVE) < 0) {
         perror("[NUMA] mbind fallback");
     } else {
         printf("[NUMA] Memory range %p-%p bound to NUMA Node %d\n", addr, (char*)addr + size, node);
@@ -421,6 +442,10 @@ void init_nn_shared(struct NeuralNet* nn) {
 }
 
 struct NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]) {
+
+    // Ensure hardware nodes are discovered
+    detect_numa_topology();
+
     size_t raw_slab_size = calculate_shared_slab_size(n_layers, n_neurons_per_layer);
     size_t aligned_size  = ALIGN_PAGE(raw_slab_size);
 
