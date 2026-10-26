@@ -14,6 +14,11 @@ extern double* __real_model_test(struct NeuralNet* nn, double** X, double** y,
                                 double* y_t, char* act, char* loss);
 extern void __real_forward_propagation(struct NeuralNet* nn, char* activation_fun, char* loss);
 
+extern double* parallel_training_sync_lock(struct NeuralNet* base_nn, double** X_train, double** y_train, 
+                                           double* y_train_temp, char* activation_fun, char* loss, 
+                                           char* opt, double learning_rate, int total_samples, 
+                                           int itr, int batch_size, int n_workers);
+
 struct NeuralNet* __wrap_newNet(int n_layers, int n_neurons_per_layer[]) {
     printf("[NUMA-WRAP] Redirecting newNet -> setup_numa_model\n");
     int batch_size = 1;
@@ -83,10 +88,13 @@ double* __wrap_model_train(struct NeuralNet* nn, double** X, double** y, double*
            nproc, batch_size, samples, ep);
     #ifdef SYNC_LOCK
     // Synchronous Mini-Batch Training (Lock-Based Reduction)
+    printf("[NUMA-WRAP] Mode: SYNCHRONOUS LOCK-BASED REDUCTION\n");
     return parallel_training_sync_lock(nn, X, y, y_t, act, loss, opt, lr, samples, ep, batch_size, nproc);
-    #else
+#else
+    // Asynchronous / Atomic Training
+    printf("[NUMA-WRAP] Mode: ASYNC/ATOMIC REDUCTION\n");
     return parallel_training(nn, X, y, y_t, act, loss, opt, lr, samples, ep, batch_size, nproc);
-    #endif
+#endif
 }
 
 void __wrap_forward_propagation(struct NeuralNet* nn, char* activation_fun, char* loss) {

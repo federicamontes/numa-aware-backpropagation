@@ -1,4 +1,3 @@
-#define _GNU_SOURCE 
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -359,6 +358,16 @@ double* model_test(struct NeuralNet* nn, double** X_test, double** y_test, doubl
         }
         forward_propagation(nn, activation_fun, loss);
         loss_val += calc_loss(nn, loss);
+
+        if (i == 0) {
+            printf("[DEBUG-TEST-FP] First Sample Probabilities (Scientific):\n  ");
+            for (int j = 1; j <= 10; j++) printf("%.2e ", nn->out[last_layer][j]);
+            printf("\n");
+
+            printf("[DEBUG-TEST-FP] First Sample Raw Logits (z):\n  ");
+            for (int j = 1; j <= 10; j++) printf("%6.2f ", nn->in[last_layer][j]);
+            printf("\n");
+        }
             
         for(int j=1;j<=nn->n_neurons_per_layer[last_layer];j++){
             if(nn->out[last_layer][j] > max_val){

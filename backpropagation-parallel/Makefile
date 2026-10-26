@@ -77,8 +77,8 @@ $(ASYNC_TARGET): main_numa.o neural_network.o numa_api_async.o wrappers.o
 	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_async.o wrappers.o -o $(ASYNC_TARGET) $(NUMA_LDFLAGS)
 
 # 3. NUMA Synchronous (Lock-Based Reduction)
-$(LOCK_TARGET): main_numa.o neural_network.o numa_api_lock.o wrappers.o
-	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_lock.o wrappers.o -o $(LOCK_TARGET) $(NUMA_LDFLAGS)
+$(LOCK_TARGET): main_numa.o neural_network.o numa_api_lock.o wrappers_lock.o
+	$(CC) $(CFLAGS) main_numa.o neural_network.o numa_api_lock.o wrappers_lock.o -o $(LOCK_TARGET) $(NUMA_LDFLAGS)
 
 # 4. NUMA Atomic (Fetch-And-Add / FAD)
 $(ATOMIC_TARGET): main_numa.o neural_network.o numa_api_atomic.o wrappers.o
@@ -104,6 +104,9 @@ main_numa.o: main.c
 
 wrappers.o: wrappers.c
 	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -c wrappers.c -o wrappers.o
+
+wrappers_lock.o: wrappers.c
+	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DSYNC_LOCK -c wrappers.c -o wrappers_lock.o
 
 numa_api_async.o: numa_api.c ipc_lock.h
 	$(CC) $(CFLAGS) -DNUMA_API_ENABLED -DSYNC_ASYNC -c numa_api.c -o numa_api_async.o
