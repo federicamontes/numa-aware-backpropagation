@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -435,7 +433,7 @@ struct NeuralNet* setup_numa_model(int n_layers, int n_neurons_per_layer[]) {
         NeuralNet *nn = (NeuralNet*)((char*)nn_mapped + i * aligned_size);
         nn->magic_test_value = 100.0 * (double)(i + 1);
         nn->n_layers = n_layers;
-        seed = 12345;
+        seed = 12345; //must match seed in main.c
         init_nn_shared(nn);
     }
 
@@ -583,6 +581,7 @@ static void update_weights_from_shared(struct NeuralNet* nn, NodeIPCContext* ipc
             if (is_sgd) {
                 delta_b = lr * grad_b;
             } else if (is_adam) {
+
                 nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * grad_b;
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * grad_b * grad_b;
 
@@ -689,9 +688,10 @@ void update_weights_batch(struct NeuralNet* nn, double lr, char* opt, int itr, i
             } else if (is_adam) {
                 // todo: non si possono fare atomic, capire l'impatto della perdita di update qui
                 // bisogna capire se ha senso tenere momentum intra-nodo oppure replicarla sui vari nodi numa
+                // todo: forse momentum vanno allocate nell'heap dei processi e non condivise tra i processi intra-nodo
                 nn->momentum_b[k][j] = beta_1 * nn->momentum_b[k][j] + (1.0 - beta_1) * grad_b;
                 nn->momentum2_b[k][j] = beta_2 * nn->momentum2_b[k][j] + (1.0 - beta_2) * grad_b * grad_b;
-                // memory fence qui
+                // memory fence qui?
                 double m_cap = nn->momentum_b[k][j] / bias_corr1;
                 double v_cap = nn->momentum2_b[k][j] / bias_corr2;
                 if (v_cap < 0.0) v_cap = 0.0;
@@ -1062,8 +1062,13 @@ double* parallel_training(struct NeuralNet* base_nn, double** X_train, double** 
         if (pid == 0) {
             free(pids);
 
-            unsigned int worker_seed = 12345 + (rank * 10007) + (itr * 31);
-            srand(worker_seed);
+             // If 1 worker, keep seed 12345 so shuffle matches serial nn_app_std exactly
+            if (n_workers == 1) {
+                srand(12345);
+            } else {
+                unsigned int worker_seed = 12345 + (rank * 10007) + (itr * 31);
+                srand(worker_seed);
+            }
 
             int my_node = rank % num_numa_nodes;
             pin_process_to_node(rank, my_node);
