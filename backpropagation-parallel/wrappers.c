@@ -19,6 +19,9 @@ extern double* parallel_training_sync_lock(struct NeuralNet* base_nn, double** X
                                            char* opt, double learning_rate, int total_samples, 
                                            int itr, int batch_size, int n_workers);
 
+static bool master_test_buffers_allocated = false;
+
+
 struct NeuralNet* __wrap_newNet(int n_layers, int n_neurons_per_layer[]) {
     printf("[NUMA-WRAP] Redirecting newNet -> setup_numa_model\n");
     int batch_size = 1;
@@ -60,6 +63,10 @@ void __wrap_init_nn(struct NeuralNet* nn) {
 void __wrap_free_NN(struct NeuralNet* nn) {
     (void)nn;
     printf("[NUMA-WRAP] Redirecting free_NN -> unmap_nn\n");
+    if (master_test_buffers_allocated) {
+        free_process_working_buffers(nn);
+        master_test_buffers_allocated = false;
+    }
     unmap_nn();
 }
 
@@ -101,12 +108,18 @@ void __wrap_forward_propagation(struct NeuralNet* nn, char* activation_fun, char
     __real_forward_propagation(nn, activation_fun, loss);
 }
 
+
 double* __wrap_model_test(struct NeuralNet* nn, double** X, double** y, 
                           double* y_t, char* act, char* loss) {
-    init_process_working_buffers(nn);
-    double* results = __real_model_test(nn, X, y, y_t, act, loss);
-    free_process_working_buffers(nn);
-    return results;
+    
+    // Allocate once on first test call
+    if (!master_test_buffers_allocated) {
+        init_process_working_buffers(nn);
+        master_test_buffers_allocated = true;
+    }
+
+    // Reuse existing buffers across all epochs (zero allocation overhead)
+    return __real_model_test(nn, X, y, y_t, act, loss);
 }
 
 #endif
